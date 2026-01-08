@@ -1,0 +1,336 @@
+##libraries 
+library(tidyr)
+library(dplyr)
+library(readr)
+library(Biostrings)
+library(biomaRt)
+library(ggplot2)
+library(edgeR)
+library(ggrepel)
+library(gt)
+library(fgsea)
+library(msigdbr)
+
+### run diff_expression_analysis_with_cell_lines.R first
+
+setwd("C:/Users/Chloe/OneDrive - Université de Moncton/IARC/coding/Projects/EVs")
+
+
+pheno$Batch <- relevel(factor(pheno$Batch,levels=unique(pheno$Batch)),ref="1")
+pheno$Type <- relevel(factor(pheno$Type,levels=unique(pheno$Type)),ref="SEV")
+pheno$Tissue <- relevel(factor(pheno$Tissue,levels=unique(pheno$Tissue)), ref= "Colon")
+pheno$Status <- relevel(factor(pheno$Status,levels=unique(pheno$Status)),ref="Normal")
+pheno$Sex <- relevel(factor(pheno$Sex,levels=unique(pheno$Sex)), "F")
+
+
+Types<- pheno$Type
+Tissues<- pheno$Tissue
+Statuses<- pheno$Status
+Sexs<- pheno$Sex
+design_matrix <- model.matrix(~ Types + Tissues +Statuses +Sexs)
+
+
+dge2 <- dge
+dge2 <- estimateGLMCommonDisp(dge2, design_matrix)
+dge2 <- estimateGLMTrendedDisp(dge2, design_matrix)
+dge2 <- estimateGLMTagwiseDisp(dge2, design_matrix)
+
+
+par(mfrow=c(1,1))
+plotBCV(dge2, main = "BCV plot ")
+
+dge_filtered <- dge2[dge2$AveLogCPM > 2, , keep.lib.sizes = FALSE]
+
+par(mfrow=c(1,1))
+plotBCV(dge_filtered, main = "BCV plot ")
+
+
+#redo graph
+dge_filtered <- estimateGLMCommonDisp(dge_filtered, design_matrix)
+dge_filtered <- estimateGLMTrendedDisp(dge_filtered, design_matrix)
+dge_filtered <- estimateGLMTagwiseDisp(dge_filtered, design_matrix)
+
+par(mfrow=c(1,1))
+plotBCV(dge_filtered, main = "BCV plot ")
+
+fit.f<-glmFit(dge_filtered ,design_matrix)
+
+Cell <- glmLRT(fit.f, coef = 2)
+LEV <- glmLRT(fit.f, coef = 3)
+Cancer<- glmLRT(fit.f, coef = 15)
+
+res_Cell<-topTags(Cell,nrow(dge_filtered$counts))
+res_LEV<-topTags(LEV,nrow(dge_filtered$counts))
+res_Cancer<-topTags(Cancer,nrow(dge_filtered$counts))
+all_res_M <- list(res_Cell,res_LEV, res_Cancer)
+
+
+
+pval_Cell<- data.frame(raw.pvalue = Cell$table$PValue,
+                   FDR=p.adjust(Cell$table$PValue, "BH"))
+pval_LEV<- data.frame(raw.pvalue = LEV$table$PValue,
+                   FDR=p.adjust(LEV$table$PValue, "BH"))
+pval_Cancer<- data.frame(raw.pvalue = Cancer$table$PValue,
+                      FDR=p.adjust(Cancer$table$PValue, "BH"))
+
+hist(pval_Cell$raw.pvalue,150)
+hist(pval_LEV$raw.pvalue,150)
+hist(pval_Cancer$raw.pvalue,150)
+
+##tableau des valeurs 
+for (i in seq(1:length(all_res_M)))
+{
+  res_M <- all_res_M[[i]]
+  table_data <- res_M$table  
+  filename <- paste0("results_",res_M$comparison , ".csv")
+  write.csv(table_data, file = filename, row.names = TRUE)
+}
+
+
+#set thresholds for colours in MA and volcano plot
+FDR_THRESHOLD=0.05
+UP_THRESHOLD=0.6
+DOWN_THRESHOLD=-0.6
+for (i in seq(1:length(all_res_M)))
+{
+  res_M <- all_res_M[[i]]
+  plot_title <- paste0("volcano plot ",res_M$comparison) 
+  #add column that says if gene is significant or not
+  mutateddf <- mutate(res_M$table, significant=ifelse(res_M$table$FDR<FDR_THRESHOLD, 1, 0))
+  
+  #add column that says if up or downregulated SSI the gene is considered significant
+  mutateddf <- mutate(mutateddf, diffexp=ifelse((mutateddf$logFC>UP_THRESHOLD & mutateddf$significant==1), "UP", (ifelse((mutateddf$logFC<DOWN_THRESHOLD & mutateddf$significant==1), "DOWN", "NO"))))
+  
+  #add gene names in a column
+  input <- cbind(gene=rownames(mutateddf), mutateddf)
+  
+  volc = ggplot(input, aes(logFC, -log10(FDR)))+
+    geom_point(aes(col=diffexp))+ #add points colored by significance
+    scale_color_manual(labels=c("Downregulated", "Not significant", "Upregulated"), values=c("red", "black","blue"))+ 
+    ggtitle(plot_title)+
+    theme(legend.position='none')+
+    geom_text_repel(data=head(input, 10), aes(label=gene))+ #adding text for the top 10 (input is already sorted by FDR)
+    geom_hline(yintercept=-log10(FDR_THRESHOLD), linetype="dashed", color = "darkgrey")+
+    geom_vline(xintercept = UP_THRESHOLD, linetype="dashed", color = "darkgrey")+
+    geom_vline(xintercept = DOWN_THRESHOLD, linetype="dashed", color = "grey")
+  
+  print(volc+theme_classic())
+  
+}
+
+##add gene names 
+res_table1 <- res_Cell$table
+res_table1$region <- rownames(res_table1)  
+res_Cell_genes <- merge(res_table1, data_gene_types_and_names, by = "region")
+res_table2 <- res_LEV$table
+res_table2$region <- rownames(res_table2)  
+res_LEV_genes <- merge(res_table2, data_gene_types_and_names, by = "region")
+res_table3 <- res_Cancer$table
+res_table3$region <- rownames(res_table3)  
+res_Cancer_genes <- merge(res_table3, data_gene_types_and_names, by = "region")
+all_res_M_genes <- list(res_Cell_genes,res_LEV_genes, res_Cancer_genes)
+comparisons <- list("Cell","LEV", "Cancer")
+
+for (i in seq(1:length(all_res_M_genes)))
+{
+  res_M <- all_res_M_genes[[i]]
+  plot_title <- paste0("Volcano Plot ", comparisons[i]) 
+  #add column that says if gene is significant or not
+  mutateddf <- mutate(res_M, significant=ifelse(res_M$FDR<FDR_THRESHOLD, 1, 0))
+  
+  #add column that says if up or downregulated SSI the gene is considered significant
+  mutateddf <- mutate(mutateddf, diffexp=ifelse((mutateddf$logFC>UP_THRESHOLD & mutateddf$significant==1), "UP", (ifelse((mutateddf$logFC<DOWN_THRESHOLD & mutateddf$significant==1), "DOWN", "NO"))))
+  
+  res_M <- res_M %>%mutate(assigned_gene = ifelse(is.na(gene_name), sub(":.*", "", region),sub(",.*", "", gene_name) ) )
+  #add gene names in a column
+  input <- cbind(gene= res_M$assigned_gene, mutateddf) %>% dplyr::select (-c(2,8,9,10))
+  top_genes <- input %>%
+    filter(diffexp != "NO") %>%
+    arrange(FDR) %>%
+    slice_head(n = 10)
+  
+  volc = ggplot(input, aes(logFC, -log10(FDR)))+
+    geom_point(aes(col=diffexp))+ #add points colored by significance
+    scale_color_manual(labels=c("Downregulated", "Not significant", "Upregulated"), values=c("red", "black","blue"))+ 
+    ggtitle(plot_title)+
+    theme(legend.position='none')+
+    geom_text_repel(data=top_genes, aes(label=gene))+ #adding text for the top 10 (input is already sorted by FDR)
+    geom_hline(yintercept=-log10(FDR_THRESHOLD), linetype="dashed", color = "darkgrey")+
+    geom_vline(xintercept = UP_THRESHOLD, linetype="dashed", color = "darkgrey")+
+    geom_vline(xintercept = DOWN_THRESHOLD, linetype="dashed", color = "grey")
+  
+  print(volc+theme_classic())
+  
+}
+
+##interactive plot
+for (i in seq_along(all_res_M_genes)) {
+  res_M <- all_res_M_genes[[i]]
+  plot_title <- paste0("Volcano Plot ", comparisons[i])
+  mutateddf <- mutate(res_M, significant = ifelse(FDR < FDR_THRESHOLD, 1, 0))
+  mutateddf <- mutate(mutateddf,
+                      diffexp = ifelse(logFC > UP_THRESHOLD & significant == 1, "UP",
+                                       ifelse(logFC < DOWN_THRESHOLD & significant == 1, "DOWN", "NO")))
+  res_M <- res_M %>%
+    mutate(assigned_gene = ifelse(is.na(gene_name),
+                                  sub(":.*", "", region),
+                                  sub(",.*", "", gene_name)))
+  input <- cbind(gene = res_M$assigned_gene, mutateddf) %>%
+    dplyr::select(-c(2, 8, 9, 10))  
+  
+  top_genes <- input %>%
+    filter(diffexp != "NO") %>%
+    arrange(FDR) %>%
+    slice_head(n = 10)
+  
+  # create ggplot
+  volc <- ggplot(input, aes(logFC, -log10(FDR), text = paste("Gene:", gene))) +  # <--- text for tooltips
+    geom_point(aes(color = diffexp)) +
+    scale_color_manual(labels = c("Downregulated", "Not significant", "Upregulated"),
+                       values = c("red", "black", "blue")) +
+    ggtitle(plot_title) +
+    theme_classic() +
+    theme(legend.position = 'right') +
+    geom_text_repel(data = top_genes, aes(label = gene), max.overlaps = 20) +
+    geom_hline(yintercept = -log10(FDR_THRESHOLD), linetype = "dashed", color = "darkgrey") +
+    geom_vline(xintercept = UP_THRESHOLD, linetype = "dashed", color = "darkgrey") +
+    geom_vline(xintercept = DOWN_THRESHOLD, linetype = "dashed", color = "grey")
+  
+  # make interactive
+  interactive_volc <- ggplotly(volc, tooltip = "text")
+  print(interactive_volc)
+}
+
+
+
+######### HM script
+
+der <- df_1[,4:78] # from ref matrix
+der <- as.matrix(der)
+
+der2 <- der[rowMeans(der) > 50,]
+
+anno <- read.table(file.choose(), header=T, sep = "\t")
+anno <- anno[order(anno$ID),]
+
+Mat <- der2
+newnames<- sapply(strsplit(colnames(Mat),".EA"), `[`, 1)
+colnames(Mat) <- newnames
+
+#col_dend = as.dendrogram(hclust(dist(Mat)))
+#col_dend = color_branches(col_dend, k = 2)
+ha = HeatmapAnnotation(Tissue = anno$Tissue, Type = anno$Type) # phenotype info
+
+Heatmap(log2(Mat+1), cluster_columns = T, name = "Log2 Expression",top_annotation = ha, show_column_names=F)
+#Save PNG
+
+
+
+pseudo_counts <- log2(Mat+1)
+pseudo_counts_cen <- pseudo_counts - rowMeans(pseudo_counts)
+svd1<-svd(pseudo_counts_cen)
+svd_percent<-(svd1$d^2/sum(svd1$d^2))
+plot(svd_percent,main="% variance explained",col=2)
+
+plot(svd1$v[,1],svd1$v[,2],ylab="2nd PC",xlab="1st PC")
+
+PCA <- cbind(svd1$v[,1], svd1$v[,2], anno$Type)
+colnames(PCA) <- c("PC1", "PC2", "Type")
+PCA <- as.data.frame(PCA)
+PCA$PC1 <- as.numeric(PCA$PC1)
+PCA$PC2 <- as.numeric(PCA$PC2)
+
+
+g <- ggplot(PCA) + geom_point(aes(x = PC1, y=PC2, colour=`Type`), size = 2.5)+ labs(title="", x="1st Principal Component", y = "2nd Principal Component") + theme_bw()
+g
+ggsave("PCA.png", dpi = 600, width=5, height = 4,g)
+
+
+
+
+####GSEA
+
+#load in reference data
+
+
+
+
+# Cancer - load in the DGE and order to match annotations in original file. 
+# Load packages
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+library(rtracklayer)
+library(readr)
+library(tidyr)
+
+df<-read_csv("C:/Users/vrm211/Desktop/Docs/Deconv/Figures Finales/OneDrive_2_10-24-2025/results_TypesLEV.csv")
+#df <- read_csv("C:/Users/Chloe/OneDrive - Université de Moncton/IARC/coding/Projects/EVs/DEA/results/All/Tableaux/results_StatusesCancer.csv")
+#df <- read_csv("C:/Users/Chloe/OneDrive - Université de Moncton/IARC/coding/Projects/EVs/DEA/results/All/Tableaux/results_TypesCell.csv")
+df$gene<- df$...1
+df <- df %>% separate(gene, into = c("chr", "range"), sep = ":\\s*") %>%  separate(range, into = c("start", "end"), sep = "-")  
+df$gene <- df$...1
+df <- dplyr::select(df, -1)
+
+gtf <- import("C:/Users/vrm211/Downloads/gencode.v49.annotation.gtf.gz")  
+genes <- gtf[gtf$type == "gene"]
+gr <- GRanges(seqnames = df$chr, ranges = IRanges(start = as.numeric(df$start), end = as.numeric(df$end)))
+hits <- findOverlaps(gr, genes)
+results <- data.frame(gene = df$gene[queryHits(hits)],gene_type = mcols(genes)$gene_type[subjectHits(hits)],gene_name = mcols(genes)$gene_name[subjectHits(hits)])
+results <- dplyr::distinct(results, gene, gene_type, gene_name, .keep_all = TRUE)
+
+# Suppose your dataframe is called df with columns:
+# df$gene     = gene symbols
+# df$logFC    = log fold change
+# df$pval     = p-value
+
+df1<- merge(df, results, .by=gene)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Suppose your dataframe is called df with SYMBOL, logFC, pval
+# 1. Create ranking metric
+df1$score <- sign(df1$logFC) * -log10(df1$FDR)
+
+# 2. Sort by score
+df1 <- df1[order(df1$score, decreasing = TRUE), ]
+
+# 3. Map SYMBOL to Entrez ID
+gene.df <- bitr(df1$gene_name,
+                fromType = "SYMBOL",
+                toType = "ENTREZID",
+                OrgDb = org.Hs.eg.db)
+
+# 4. Merge mapping back to keep scores
+df.mapped <- merge(df1, gene.df, by.x = "gene_name", by.y = "SYMBOL")
+library(dplyr)
+
+# Deduplicate: keep max score per Entrez ID
+df.unique <- df.mapped %>%
+  group_by(ENTREZID) %>%
+  summarise(score = mean(score)) %>%
+  ungroup()
+
+# Build ranks vector
+ranks <- df.unique$score
+names(ranks) <- df.unique$ENTREZID
+ranks <- sort(ranks, decreasing = TRUE)
+
+
+# 6. Run KEGG GSEA
+gsea.kegg <- gseKEGG(geneList = ranks,
+                     organism = "hsa",
+                     minGSSize = 10,
+                     maxGSSize = 500,
+                     pvalueCutoff = 0.10)
+
+ridgeplot(gsea.kegg)+ labs(x = "enrichment distribution") #(800*400)
+write.table(gsea.kegg@result, file = "LEV_kegg.tsv", quote = F, sep = "\t")
+
+##### 73% of genes DE between Cells vs SEV
+##### 51% of genes DE between LEV and SEV
+
+
+
+
+
