@@ -1,0 +1,87 @@
+######### HM script
+
+der <- df_1[,4:78] # from ref matrix
+der <- as.matrix(der)
+
+der2 <- der[rowMeans(der) > 50,]
+
+anno <- read.table(file.choose(), header=T, sep = "\t")
+anno <- anno[order(anno$ID),]
+
+Mat <- der2
+newnames<- sapply(strsplit(colnames(Mat),".EA"), `[`, 1)
+colnames(Mat) <- newnames
+
+#col_dend = as.dendrogram(hclust(dist(Mat)))
+#col_dend = color_branches(col_dend, k = 2)
+
+group_colors = c("Blymphocyte"="goldenrod1","Blymphocyte.Stim"="goldenrod","Tlymphocyte.Stim"="honeydew4","Tlymphocyte"="honeydew3","Myeloid"="red4","Platelets"="firebrick2","Breast"="violetred","Prostate"="dodgerblue4","Pancreas"="chartreuse4","Lung"="skyblue","Kidney"="coral","Colon"="sienna4")
+ha = HeatmapAnnotation(Tissue = anno$Tissue, Type = anno$Type, col = list(Tissue = group_colors)) # phenotype info
+
+Heatmap(log2(Mat+1), cluster_columns = T, name = "Log2 Expression",top_annotation = ha, show_column_names=F)
+#Save PNG
+png(
+  filename = "high_res_newHM.png",
+  width = 2800,   # Width in pixels (e.g., 2400 pixels for an 8-inch wide image at 300 dpi)
+  height = 1800,  # Height in pixels (e.g., 1800 pixels for a 6-inch high image at 300 dpi)
+  res = 300       # Resolution in pixels per inch (dpi)
+)
+
+# Your base R plotting code goes here
+
+Heatmap(log2(Mat+1), cluster_columns = T, name = "Log2 Expression",top_annotation = ha, show_column_names=F)
+# Close the graphics device to save the file
+dev.off()
+
+
+pseudo_counts <- log2(Mat+1)
+pseudo_counts_cen <- pseudo_counts - rowMeans(pseudo_counts)
+svd1<-svd(pseudo_counts_cen)
+svd_percent<-(svd1$d^2/sum(svd1$d^2))
+plot(svd_percent,main="% variance explained",col=2)
+
+plot(svd1$v[,1],svd1$v[,2],ylab="2nd PC",xlab="1st PC")
+
+PCA <- cbind(svd1$v[,1], svd1$v[,2], anno$Type)
+colnames(PCA) <- c("PC1", "PC2", "Type")
+PCA <- as.data.frame(PCA)
+PCA$PC1 <- as.numeric(PCA$PC1)
+PCA$PC2 <- as.numeric(PCA$PC2)
+
+
+g <- ggplot(PCA) + geom_point(aes(x = PC1, y=PC2, colour=`Type`), size = 2.5)+ labs(title="", x="1st Principal Component", y = "2nd Principal Component") + theme_bw()
+g
+ggsave("PCA.png", dpi = 600, width=5, height = 4,g)
+
+
+# For figure with  CRC estimates and boxplots
+
+group_colors = c("B_cell"="goldenrod1","T_cell"="honeydew4","Myeloid"="red4","Platelet"="firebrick2","Breast"="violetred","Prostate"="dodgerblue4","Pancreas"="chartreuse4","Lung"="skyblue","Kidney"="coral","Colon"="sienna4")
+
+dat<- read.table(file.choose(), sep = "\t", header = T) # CRC estimates imported after deconvolution
+dat1 <- dat[,-c(12,13,14)]
+rownames(dat1) <- dat$Mixture
+dat1<- dat1[,-1]
+Mat <- as.matrix(dat1)
+
+anno <- read.table(file.choose(), header = T, sep = "\t") # File with CRC statuses
+anno[anno==1] <- "Precancerous"
+anno[anno=="2"] <- "Cancer"
+anno[anno==0] <- "Healthy"
+anno1 <- factor(anno, levels = c("Healthy", "Precancerous", "Cancer"))
+ha = HeatmapAnnotation(Status = anno1) # phenotype info
+Heatmap(t(Mat+0.0000001), cluster_columns = T, name = "Abundance Estimate",top_annotation = ha, show_column_names=F)
+
+
+
+
+g1 <- as.data.frame(t(Mat))
+g1$Type <- rownames(g1)
+
+g1 <- melt(g1)
+names(g1) <- c("Type", "Status", "Estimated Proportion")
+g1$Status <- rep(anno1, each=10)
+
+p <- ggplot(g1, aes(Type, `Estimated Proportion`, fill = Status)) + geom_boxplot(position = "dodge")+theme_bw()
+
+ggsave("Boxplot_cibersortv7_filter_consolidated.png", dpi = 600, width=7, height = 3,p)
