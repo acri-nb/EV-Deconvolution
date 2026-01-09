@@ -1,0 +1,408 @@
+# Dual Simplex Deconvolution Framework
+# Based on the approach from artyomovlab/dualsimplex
+
+# Required libraries
+library(dplyr)
+library(tidyr)
+library(Matrix)
+library(ggplot2)
+library(MASS)  # For ginv (generalized inverse)
+
+# Install and load the quadprog package for quadratic programming
+if(!requireNamespace("quadprog", quietly = TRUE)) {
+  install.packages("quadprog")
+}
+library(quadprog)
+
+# ===== DUAL SIMPLEX FUNCTIONS =====
+
+#' Dual Simplex Algorithm for Deconvolution
+#'
+#' @param X The mixture matrix (genes × samples)
+#' @param S The signature/reference matrix (genes × cell types)
+#' @param non_negative Whether to enforce non-negativity constraints
+#' @param sum_to_one Whether to enforce sum-to-one constraints
+#' @param max_iter Maximum number of iterations
+#' @param tol Tolerance for convergence
+#'
+#' @return A list with the estimated proportions and other results
+dual_simplex_deconv <- function(X, S, non_negative = TRUE, sum_to_one = TRUE, 
+                                max_iter = 1000, tol = 1e-6) {
+  # Check dimensions
+  n_genes <- nrow(X)
+  n_samples <- ncol(X)
+  n_cell_types <- ncol(S)
+  
+  cat("Running Dual Simplex with dimensions:\n")
+  cat(sprintf("- %d genes × %d samples in mixture\n", n_genes, n_samples))
+  cat(sprintf("- %d genes × %d cell types in reference\n", n_genes, n_cell_types))
+  
+  # Initialize proportions matrix
+  P <- matrix(1/n_cell_types, nrow = n_samples, ncol = n_cell_types)
+  
+  # For each sample, solve the quadratic programming problem
+  for (i in 1:n_samples) {
+    cat(sprintf("Processing sample %d/%d\n", i, n_samples))
+    
+    # Extract the mixture data for this sample
+    x_i <- X[, i]
+    
+    # Set up the quadratic programming problem
+    # We want to minimize ||S*p - x||^2 subject to constraints
+    
+    # Calculate D matrix (Hessian of quadratic form)
+    D <- t(S) %*% S
+    
+    # Calculate the linear term (d)
+    d <- t(S) %*% x_i
+    
+    # Set up constraints
+    if (sum_to_one) {
+      # Sum to one constraint
+      A <- matrix(1, nrow = 1, ncol = n_cell_types)
+      b <- 1
+      
+      if (non_negative) {
+        # Add non-negativity constraints
+        A <- rbind(A, diag(n_cell_types))
+        b <- c(b, rep(0, n_cell_types))
+      }
+      
+      # Solve with quadprog
+      result <- try(
+        solve.QP(
+          Dmat = D,
+          dvec = d,
+          Amat = t(A),  # quadprog expects the transpose
+          bvec = b,
+          meq = 1  # First constraint is equality (sum to 1)
+        ),
+        silent = TRUE
+      )
+      
+      if (inherits(result, "try-error")) {
+        # If error occurs, fall back to a simpler solution
+        cat("QP solver failed for sample", i, "- using fallback method\n")
+        # Simple least squares with normalization
+        p_i <- ginv(S) %*% x_i
+        p_i[p_i < 0] <- 0  # Enforce non-negativity
+        p_i <- p_i / sum(p_i)  # Enforce sum to one
+      } else {
+        p_i <- result$solution
+      }
+    } else {
+      # No sum-to-one constraint, just non-negativity if specified
+      if (non_negative) {
+        A <- diag(n_cell_types)
+        b <- rep(0, n_cell_types)
+        
+        # Solve with quadprog
+        result <- try(
+          solve.QP(
+            Dmat = D,
+            dvec = d,
+            Amat = t(A),
+            bvec = b,
+            meq = 0  # No equality constraints
+          ),
+          silent = TRUE
+        )
+        
+        if (inherits(result, "try-error")) {
+          cat("QP solver failed for sample", i, "- using fallback method\n")
+          p_i <- ginv(S) %*% x_i
+          p_i[p_i < 0] <- 0  # Enforce non-negativity
+        } else {
+          p_i <- result$solution
+        }
+      } else {
+        # No constraints - simple least squares
+        p_i <- ginv(S) %*% x_i
+      }
+    }
+    
+    # Store the solution
+    P[i, ] <- p_i
+  }
+  
+  # Calculate goodness of fit
+  reconstruction <- t(P %*% t(S))
+  error <- mean((X - reconstruction)^2)
+  
+  cat(sprintf("Dual Simplex completed with MSE: %.6f\n", error))
+  
+  return(list(
+    proportions = P,
+    error = error,
+    reconstruction = reconstruction
+  ))
+}
+
+# ===== DATA LOADING AND PREPARATION =====
+
+cat("Starting Dual Simplex deconvolution workflow...\n")
+
+deconv_ready <- readRDS("deconv_ready_data.rds")
+
+# For testing purposes, we'll create synthetic data if the real data is not available
+if (!exists("deconv_ready")) {
+  cat("No input data found. Creating synthetic data for demonstration...\n")
+  
+  # Number of genes, cell types, and samples
+  n_genes <- 2000
+  n_cell_types <- 8
+  n_samples <- 20
+  
+  # Create random reference matrix (genes × cell types)
+  set.seed(42)
+  ref_matrix <- matrix(rexp(n_genes * n_cell_types, rate = 1), nrow = n_genes, ncol = n_cell_types)
+  colnames(ref_matrix) <- paste0("CellType", 1:n_cell_types)
+  rownames(ref_matrix) <- paste0("Gene", 1:n_genes)
+  
+  # Create random proportions (samples × cell types)
+  true_proportions <- matrix(runif(n_samples * n_cell_types), nrow = n_samples, ncol = n_cell_types)
+  true_proportions <- true_proportions / rowSums(true_proportions)  # Normalize to sum to 1
+  
+  # Create mixture matrix (genes × samples)
+  mix_matrix <- ref_matrix %*% t(true_proportions)
+  mix_matrix <- mix_matrix + matrix(rnorm(n_genes * n_samples, sd = 0.1), nrow = n_genes, ncol = n_samples)
+  mix_matrix[mix_matrix < 0] <- 0  # Ensure non-negativity
+  colnames(mix_matrix) <- paste0("Sample", 1:n_samples)
+  rownames(mix_matrix) <- rownames(ref_matrix)
+} else {
+  # Extract matrices from your data
+  ref_matrix <- as.matrix(deconv_ready$reference_matrix)
+  mix_matrix <- as.matrix(deconv_ready$mixture_matrix)
+}
+
+# Check dimensions
+cat("Matrix dimensions:\n")
+cat(sprintf("Reference matrix: %dx%d\n", nrow(ref_matrix), ncol(ref_matrix)))
+cat(sprintf("Mixture matrix: %dx%d\n", nrow(mix_matrix), ncol(mix_matrix)))
+
+# Check if gene names are present
+if(is.null(rownames(ref_matrix)) || is.null(rownames(mix_matrix))) {
+  cat("Gene names are missing! Adding gene names to matrices...\n")
+  gene_names <- paste0("gene", 1:nrow(ref_matrix))
+  rownames(ref_matrix) <- gene_names
+  rownames(mix_matrix) <- gene_names
+}
+
+# Check if column names are present
+if(is.null(colnames(ref_matrix))) {
+  colnames(ref_matrix) <- paste0("CellType", 1:ncol(ref_matrix))
+}
+if(is.null(colnames(mix_matrix))) {
+  colnames(mix_matrix) <- paste0("Sample", 1:ncol(mix_matrix))
+}
+
+# ===== DATA TRANSFORMATION AND FILTERING =====
+
+# Log-transform the data
+log_transform <- function(x) {
+  log2(x + 1)
+}
+
+ref_matrix_log <- log_transform(ref_matrix)
+mix_matrix_log <- log_transform(mix_matrix)
+
+# Ensure gene names are preserved
+rownames(ref_matrix_log) <- rownames(ref_matrix)
+rownames(mix_matrix_log) <- rownames(mix_matrix)
+colnames(ref_matrix_log) <- colnames(ref_matrix)
+colnames(mix_matrix_log) <- colnames(mix_matrix)
+
+# Simple filtering by expression and variance
+filter_genes <- function(matrix, min_expr = 0.05, top_var_genes = 3000) {
+  # Store original gene names
+  original_genes <- rownames(matrix)
+  
+  # Filter by minimum expression
+  row_means <- rowMeans(matrix)
+  expr_filter <- row_means > min_expr
+  matrix_filtered <- matrix[expr_filter, , drop=FALSE]
+  
+  # Make sure gene names are preserved
+  rownames(matrix_filtered) <- original_genes[expr_filter]
+  
+  # Sort by variance and take top genes
+  row_vars <- apply(matrix_filtered, 1, var)
+  var_order <- order(row_vars, decreasing = TRUE)
+  n_genes <- min(top_var_genes, nrow(matrix_filtered))
+  final_genes <- var_order[1:n_genes]
+  
+  matrix_final <- matrix_filtered[final_genes, , drop=FALSE]
+  
+  # Preserve gene names
+  rownames(matrix_final) <- rownames(matrix_filtered)[final_genes]
+  
+  cat("Filtering results:\n")
+  cat(sprintf("Original dimensions: %d x %d\n", nrow(matrix), ncol(matrix)))
+  cat(sprintf("After expression filter: %d x %d\n", nrow(matrix_filtered), ncol(matrix_filtered)))
+  cat(sprintf("Final dimensions: %d x %d\n", nrow(matrix_final), ncol(matrix_final)))
+  
+  return(matrix_final)
+}
+
+# Apply filtering to both matrices
+ref_filtered <- filter_genes(ref_matrix_log)
+mix_filtered <- filter_genes(mix_matrix_log)
+
+# Align genes between reference and mixture matrices
+common_genes <- intersect(rownames(ref_filtered), rownames(mix_filtered))
+cat(sprintf("Number of common genes after filtering: %d\n", length(common_genes)))
+
+if (length(common_genes) == 0) {
+  stop("No common genes found between reference and mixture matrices after filtering!")
+}
+
+# Subset both matrices to common genes
+ref_aligned <- ref_filtered[common_genes, ]
+mix_aligned <- mix_filtered[common_genes, ]
+
+# Check final dimensions
+cat("Final aligned dimensions:\n")
+cat(sprintf("Reference matrix: %dx%d\n", nrow(ref_aligned), ncol(ref_aligned)))
+cat(sprintf("Mixture matrix: %dx%d\n", nrow(mix_aligned), ncol(mix_aligned)))
+
+# ===== RUN DUAL SIMPLEX DECONVOLUTION =====
+
+cat("\nRunning Dual Simplex deconvolution...\n")
+
+# Run the deconvolution
+result <- dual_simplex_deconv(
+  X = mix_aligned,
+  S = ref_aligned,
+  non_negative = TRUE,
+  sum_to_one = TRUE
+)
+
+# Extract the proportions
+proportion_matrix <- result$proportions
+
+# Add row and column names
+rownames(proportion_matrix) <- colnames(mix_aligned)
+colnames(proportion_matrix) <- colnames(ref_aligned)
+
+cat("Deconvolution completed!\n")
+cat("Dimensions of proportions matrix:", dim(proportion_matrix), "\n")
+cat("First few rows of proportions:\n")
+print(head(proportion_matrix))
+
+# ===== VISUALIZATIONS =====
+
+cat("\nCreating visualizations...\n")
+
+# Create a bar plot of cell type proportions
+prop_df <- as.data.frame(proportion_matrix) %>%
+  tibble::rownames_to_column("Sample") %>%
+  tidyr::pivot_longer(-Sample, names_to = "CellType", values_to = "Proportion")
+
+p <- ggplot(prop_df, aes(x = Sample, y = Proportion, fill = CellType)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Estimated Cell Type Proportions (Dual Simplex)", 
+       x = "Sample", 
+       y = "Proportion")
+
+# Save the plot
+ggsave("dualsimplex_proportions_barplot.png", p, width = 10, height = 6)
+cat("Visualization saved to dualsimplex_proportions_barplot.png\n")
+
+# Create a heatmap of proportions
+if(requireNamespace("pheatmap", quietly = TRUE)) {
+  pheatmap::pheatmap(proportion_matrix, 
+                     main = "Cell Type Proportions Heatmap",
+                     cluster_rows = TRUE,
+                     cluster_cols = TRUE,
+                     filename = "dualsimplex_proportions_heatmap.png")
+  cat("Proportions heatmap saved to dualsimplex_proportions_heatmap.png\n")
+} else {
+  cat("Package 'pheatmap' not available, skipping heatmap visualization.\n")
+}
+
+# ===== EVALUATE DECONVOLUTION QUALITY =====
+
+# Calculate reconstruction error
+reconstruction <- result$reconstruction
+mse <- result$error
+
+cat("\nDeconvolution quality metrics:\n")
+cat(sprintf("Mean Squared Error: %.6f\n", mse))
+
+# Correlation between original and reconstructed mixtures
+cor_vals <- sapply(1:ncol(mix_aligned), function(i) {
+  cor(mix_aligned[, i], reconstruction[, i])
+})
+
+cat("Correlation between original and reconstructed samples:\n")
+cat(sprintf("Mean correlation: %.4f\n", mean(cor_vals)))
+cat(sprintf("Range: %.4f - %.4f\n", min(cor_vals), max(cor_vals)))
+
+# ===== SAVE RESULTS =====
+
+# Save the deconvolution results
+deconv_results <- list(
+  proportions = proportion_matrix,
+  reconstruction = reconstruction,
+  error = mse,
+  correlation = cor_vals
+)
+
+saveRDS(deconv_results, "dualsimplex_deconv_results.rds")
+cat("Results saved to dualsimplex_deconv_results.rds\n")
+
+# Write CSV of estimated proportions for easy examination
+write.csv(proportion_matrix, "dualsimplex_estimated_proportions.csv")
+cat("Proportions written to dualsimplex_estimated_proportions.csv\n")
+
+# ===== COMPARE WITH GROUND TRUTH (IF AVAILABLE) =====
+
+if (exists("true_proportions")) {
+  cat("\nComparing with ground truth proportions...\n")
+  
+  # Make sure the dimensions match
+  if (nrow(true_proportions) == nrow(proportion_matrix) && 
+      ncol(true_proportions) == ncol(proportion_matrix)) {
+    
+    # Calculate mean absolute error
+    mae <- mean(abs(true_proportions - proportion_matrix))
+    
+    # Calculate correlation with ground truth
+    cor_truth <- cor(as.vector(true_proportions), as.vector(proportion_matrix))
+    
+    cat("Comparison with ground truth:\n")
+    cat(sprintf("Mean Absolute Error: %.4f\n", mae))
+    cat(sprintf("Correlation: %.4f\n", cor_truth))
+    
+    # Create a plot comparing true vs estimated proportions
+    truth_df <- as.data.frame(true_proportions) %>%
+      tibble::rownames_to_column("Sample") %>%
+      tidyr::pivot_longer(-Sample, names_to = "CellType", values_to = "Proportion") %>%
+      mutate(Type = "True")
+    
+    est_df <- as.data.frame(proportion_matrix) %>%
+      tibble::rownames_to_column("Sample") %>%
+      tidyr::pivot_longer(-Sample, names_to = "CellType", values_to = "Proportion") %>%
+      mutate(Type = "Estimated")
+    
+    compare_df <- rbind(truth_df, est_df)
+    
+    p_compare <- ggplot(compare_df, aes(x = Sample, y = Proportion, fill = CellType)) +
+      geom_bar(stat = "identity") +
+      facet_wrap(~ Type, ncol = 1) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      labs(title = "True vs Estimated Cell Type Proportions", 
+           x = "Sample", 
+           y = "Proportion")
+    
+    ggsave("dualsimplex_true_vs_estimated.png", p_compare, width = 10, height = 8)
+    cat("Comparison plot saved to dualsimplex_true_vs_estimated.png\n")
+  } else {
+    cat("Dimensions of true proportions do not match estimated proportions, skipping comparison.\n")
+  }
+}
+
+cat("\nDual Simplex deconvolution workflow completed successfully!\n")
