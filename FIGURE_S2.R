@@ -252,7 +252,7 @@ color_palette <- c(
 method_order <- c("Ground Truth", "CIBERSORT", "MuSiC", "Dual Simplex", 
                   "NMF", "NLLS", "NLLS + Quadprog", "HSPE")
 
-# Create plots for each mix
+# Create plots for each mix (WITHOUT individual legends)
 plot_list <- list()
 for (mix_id in paste0("Mix", 1:6)) {
   mix_data <- all_data_long %>% 
@@ -277,7 +277,7 @@ for (mix_id in paste0("Mix", 1:6)) {
          y = "Proportion") +
     theme_minimal() +
     theme(
-      legend.position = "none",
+      legend.position = "none",  # Keep this as none for individual plots
       axis.text.x = element_text(angle = 45, hjust = 1, size = 9, face = "bold"),
       axis.text.y = element_text(face = "bold"),
       axis.title.y = element_text(size = 10, face = "bold"),
@@ -288,15 +288,25 @@ for (mix_id in paste0("Mix", 1:6)) {
   plot_list[[mix_id]] <- p
 }
 
-# Create combined plot
+# Create combined plot with legend at bottom
 final_plot <- (plot_list$Mix1 + plot_list$Mix2 + plot_list$Mix3) / 
   (plot_list$Mix4 + plot_list$Mix5 + plot_list$Mix6) +
   plot_layout(guides = "collect") & 
-  theme(legend.position = "none")
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 11, face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.key.size = unit(0.5, "cm")
+  ) &
+  guides(fill = guide_legend(
+    title = "Cell Type",
+    nrow = 2,
+    byrow = TRUE
+  ))
 
 # Save plots at publication quality
-ggsave("deconvolution_comparison_PUB.pdf", final_plot, width = 16, height = 10, dpi = 600)
-ggsave("deconvolution_comparison_PUB.png", final_plot, width = 16, height = 10, dpi = 600)
+ggsave("deconvolution_comparison_PUB.pdf", final_plot, width = 16, height = 11, dpi = 600)
+ggsave("deconvolution_comparison_PUB.png", final_plot, width = 16, height = 11, dpi = 600)
 
 # Display the plot
 print(final_plot)
