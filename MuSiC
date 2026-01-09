@@ -1,0 +1,438 @@
+# MuSiC Deconvolution Implementation
+# This script implements the MuSiC method for deconvolving bulk RNA-seq data
+# using the prepared reference and mixture data
+
+# Load necessary libraries
+library(dplyr)
+library(Matrix)
+library(MASS)  # For robust linear regression
+library(ggplot2)
+
+# Function to implement the MuSiC deconvolution algorithm
+music_deconvolution <- function(reference_matrix, mixture_matrix, 
+                                weighting = "default", 
+                                iterations = 100, 
+                                verbose = TRUE) {
+  # Validate input matrices
+  if (ncol(reference_matrix) < 2) {
+    stop("Reference matrix must have at least 2 cell types (columns)")
+  }
+  
+  if (nrow(reference_matrix) != nrow(mixture_matrix)) {
+    stop("Reference and mixture matrices must have the same number of features (rows)")
+  }
+  
+  # Get dimensions
+  n_regions <- nrow(reference_matrix)
+  n_cell_types <- ncol(reference_matrix)
+  n_samples <- ncol(mixture_matrix)
+  
+  if (verbose) {
+    cat("Starting MuSiC deconvolution:\n")
+    cat("- Features (regions):", n_regions, "\n")
+    cat("- Cell types:", n_cell_types, "\n")
+    cat("- Mixture samples:", n_samples, "\n")
+  }
+  
+  # Ensure all data is numeric
+  reference_matrix <- as.matrix(reference_matrix)
+  mixture_matrix <- as.matrix(mixture_matrix)
+  storage.mode(reference_matrix) <- "numeric"
+  storage.mode(mixture_matrix) <- "numeric"
+  
+  # Handle any potential missing or negative values
+  reference_matrix[is.na(reference_matrix)] <- 0
+  mixture_matrix[is.na(mixture_matrix)] <- 0
+  reference_matrix[reference_matrix < 0] <- 0
+  mixture_matrix[mixture_matrix < 0] <- 0
+  
+  # Calculate feature weights
+  if (verbose) cat("Calculating feature weights...\n")
+  weights <- calculate_feature_weights(reference_matrix, weighting)
+  
+  # Initialize results matrix
+  proportions <- matrix(0, nrow = n_cell_types, ncol = n_samples)
+  rownames(proportions) <- colnames(reference_matrix)
+  colnames(proportions) <- colnames(mixture_matrix)
+  
+  # Perform deconvolution for each sample
+  for (sample_idx in 1:n_samples) {
+    if (verbose) cat("Processing sample", sample_idx, "of", n_samples, "\n")
+    
+    # Get mixture data for current sample
+    mixture_sample <- mixture_matrix[, sample_idx]
+    
+    # Estimate proportions
+    sample_props <- estimate_proportions(reference_matrix, mixture_sample, 
+                                         weights, iterations, verbose)
+    
+    # Store results
+    proportions[, sample_idx] <- sample_props
+  }
+  
+  # Normalize proportions to sum to 1
+  proportions <- apply(proportions, 2, function(x) {
+    x[x < 0] <- 0  # Non-negative constraint
+    if (sum(x) > 0) x / sum(x) else x
+  })
+  
+  if (verbose) cat("Deconvolution complete!\n")
+  
+  return(proportions)
+}
+
+# Function to calculate feature weights
+calculate_feature_weights <- function(reference_matrix, weighting_method) {
+  n_regions <- nrow(reference_matrix)
+  
+  if (weighting_method == "default") {
+    # Calculate cross-subject variance
+    weights <- rep(1, n_regions)
+    
+    # Iterate over regions
+    for (i in 1:n_regions) {
+      # Calculate variance-to-mean ratio (VMR) for each feature
+      mean_expr <- mean(reference_matrix[i, ])
+      if (mean_expr > 0) {
+        var_expr <- var(reference_matrix[i, ])
+        weights[i] <- 1 / (var_expr / mean_expr + 0.01)  # Add small constant to avoid division by zero
+      } else {
+        weights[i] <- 0.01  # Small weight for unexpressed features
+      }
+    }
+    
+    # Normalize weights to sum to n_regions
+    weights <- weights / mean(weights)
+    
+  } else if (weighting_method == "uniform") {
+    # Use uniform weights
+    weights <- rep(1, n_regions)
+    
+  } else if (weighting_method == "expression") {
+    # Weight by average expression level
+    weights <- rowMeans(reference_matrix)
+    weights <- weights / mean(weights)
+    
+  } else {
+    stop("Unknown weighting method: ", weighting_method)
+  }
+  
+  return(weights)
+}
+
+# Function to estimate proportions for a single sample
+estimate_proportions <- function(reference_matrix, mixture_sample, 
+                                 weights, iterations, verbose) {
+  n_regions <- nrow(reference_matrix)
+  n_cell_types <- ncol(reference_matrix)
+  
+  # Initialize proportions with non-negative least squares
+  init_props <- nnls_proportions(reference_matrix, mixture_sample)
+  
+  # Apply iterated weighted least squares for refinement
+  props <- init_props
+  
+  for (iter in 1:iterations) {
+    # Predict mixture using current proportions
+    predicted <- reference_matrix %*% props
+    
+    # Calculate residuals
+    residuals <- mixture_sample - predicted
+    
+    # Update weights based on residuals
+    iter_weights <- weights * exp(-abs(residuals) / (mean(abs(residuals)) + 0.01))
+    iter_weights[is.na(iter_weights)] <- min(iter_weights, na.rm = TRUE)
+    
+    # Re-estimate proportions with updated weights
+    # Directly pass weights as a vector
+    props_new <- nnls_weighted(reference_matrix, mixture_sample, iter_weights)
+    
+    # Check convergence
+    if (sum(abs(props_new - props)) < 1e-5) {
+      if (verbose) cat("  Converged after", iter, "iterations\n")
+      break
+    }
+    
+    props <- props_new
+  }
+  
+  # Ensure proportions sum to 1
+  props <- props / sum(props)
+  
+  return(props)
+}
+
+# Function for non-negative least squares
+nnls_proportions <- function(A, b) {
+  # Simple implementation of non-negative least squares
+  # Solves min ||Ax - b||^2 subject to x >= 0
+  
+  n <- ncol(A)
+  
+  # Use NNLS package if available
+  if (requireNamespace("nnls", quietly = TRUE)) {
+    props <- nnls::nnls(A, b)$x
+  } else {
+    # Fallback implementation using quadratic programming
+    if (requireNamespace("quadprog", quietly = TRUE)) {
+      Dmat <- t(A) %*% A
+      dvec <- t(A) %*% b
+      Amat <- diag(n)
+      bvec <- rep(0, n)
+      
+      qp_result <- quadprog::solve.QP(Dmat, dvec, Amat, bvec)
+      props <- qp_result$solution
+    } else {
+      # Very simple fallback using iterative projection
+      props <- rep(1/n, n)
+      for (i in 1:100) {
+        gradient <- t(A) %*% (A %*% props - b)
+        props <- props - 0.01 * gradient
+        props[props < 0] <- 0
+        if (sum(props) > 0) props <- props / sum(props)
+      }
+    }
+  }
+  
+  return(props)
+}
+
+# Function for weighted non-negative least squares
+nnls_weighted <- function(A, b, W) {
+  # Weighted non-negative least squares
+  # Solves min ||W^(1/2)(Ax - b)||^2 subject to x >= 0
+  
+  # Make sure W is a vector for element-wise multiplication
+  if (is.matrix(W)) {
+    W <- diag(W)
+  }
+  
+  # Apply weights (element-wise sqrt multiplication)
+  w_sqrt <- sqrt(W)
+  Aw <- A * w_sqrt  # Element-wise multiplication
+  bw <- b * w_sqrt
+  
+  # Solve NNLS
+  props <- nnls_proportions(Aw, bw)
+  
+  return(props)
+}
+
+# Function to plot deconvolution results
+plot_deconvolution_results <- function(proportions, title = "Cell Type Proportions") {
+  # Check if tidyr is available for reshaping
+  if (!requireNamespace("tidyr", quietly = TRUE)) {
+    stop("tidyr package is required for plotting. Please install it with install.packages('tidyr')")
+  }
+  
+  # Convert matrix to data frame for plotting
+  plot_data <- as.data.frame(t(proportions))
+  plot_data$Sample <- rownames(plot_data)
+  if (is.null(plot_data$Sample)) {
+    plot_data$Sample <- paste0("Sample", 1:nrow(plot_data))
+  }
+  
+  # Reshape to long format
+  plot_data_long <- tidyr::pivot_longer(
+    plot_data, 
+    cols = -Sample, 
+    names_to = "CellType", 
+    values_to = "Proportion"
+  )
+  
+  # Create stacked bar plot
+  if (requireNamespace("ggplot2", quietly = TRUE)) {
+    p <- ggplot2::ggplot(plot_data_long, 
+                         ggplot2::aes(x = Sample, 
+                                      y = Proportion, 
+                                      fill = CellType)) +
+      ggplot2::geom_bar(stat = "identity") +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)) +
+      ggplot2::labs(x = "Sample", y = "Proportion", fill = "Cell Type",
+                    title = title)
+    
+    # Alternative: create an additional non-stacked plot for comparison
+    p2 <- ggplot2::ggplot(plot_data_long, 
+                          ggplot2::aes(x = CellType, 
+                                       y = Proportion, 
+                                       fill = Sample)) +
+      ggplot2::geom_bar(stat = "identity", position = "dodge") +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)) +
+      ggplot2::labs(x = "Cell Type", y = "Proportion", fill = "Sample",
+                    title = paste0(title, " (Grouped by Cell Type)"))
+    
+    # Create a simple data table plot as backup
+    library(gridExtra)
+    proportion_table <- tableGrob(round(proportions, 3))
+    
+    # Return all plots
+    return(list(stacked = p, grouped = p2, table = proportion_table))
+  } else {
+    # Fallback to base graphics if ggplot2 not available
+    barplot(proportions, 
+            beside = TRUE, 
+            legend.text = rownames(proportions),
+            main = title,
+            xlab = "Sample",
+            ylab = "Proportion")
+    return(NULL)
+  }
+}
+
+# Function to evaluate deconvolution performance if ground truth is available
+evaluate_deconvolution <- function(estimated_proportions, true_proportions) {
+  # Calculate metrics
+  rmse <- sqrt(mean((estimated_proportions - true_proportions)^2))
+  mae <- mean(abs(estimated_proportions - true_proportions))
+  
+  # Pearson correlation (cell type-wise)
+  correlations <- sapply(1:nrow(estimated_proportions), function(i) {
+    cor(estimated_proportions[i,], true_proportions[i,])
+  })
+  
+  # Return evaluation metrics
+  list(
+    rmse = rmse,
+    mae = mae,
+    correlations = correlations,
+    mean_correlation = mean(correlations, na.rm = TRUE)
+  )
+}
+
+# Main function to run MuSiC deconvolution
+run_music_deconvolution <- function(deconv_data, 
+                                    weighting = "default",
+                                    iterations = 100,
+                                    output_file = "music_results.rds") {
+  # Extract data
+  reference_matrix <- as.matrix(deconv_data$reference_matrix)
+  mixture_matrix <- as.matrix(deconv_data$mixture_matrix)
+  
+  # Run deconvolution
+  cat("Running MuSiC deconvolution...\n")
+  proportions <- music_deconvolution(
+    reference_matrix = reference_matrix,
+    mixture_matrix = mixture_matrix,
+    weighting = weighting,
+    iterations = iterations,
+    verbose = TRUE
+  )
+  
+  # Plot results
+  cat("Creating visualization plots...\n")
+  plot <- plot_deconvolution_results(proportions)
+  
+  # Explicitly print the plot
+  print(plot)
+  
+  # Create and print heatmap
+  cat("Creating heatmap...\n")
+  if (requireNamespace("pheatmap", quietly = TRUE)) {
+    pheatmap::pheatmap(
+      proportions,
+      main = "Cell Type Proportions Across Samples",
+      cluster_rows = TRUE,
+      cluster_cols = TRUE,
+      display_numbers = TRUE,
+      number_format = "%.2f"
+    )
+  } else {
+    cat("pheatmap package not available for heatmap visualization.\n")
+  }
+  
+  # Save results
+  if (!is.null(output_file)) {
+    results <- list(
+      proportions = proportions,
+      plot = plot
+    )
+    saveRDS(results, file = output_file)
+    cat("Results saved to", output_file, "\n")
+    
+    # Save plots as PDF files
+    pdf_file <- gsub("\\.rds$", "_barplot.pdf", output_file)
+    pdf(pdf_file)
+    print(plot)
+    dev.off()
+    cat("Bar plot saved to", pdf_file, "\n")
+    
+    if (requireNamespace("pheatmap", quietly = TRUE)) {
+      heatmap_file <- gsub("\\.rds$", "_heatmap.pdf", output_file)
+      pdf(heatmap_file)
+      pheatmap::pheatmap(
+        proportions,
+        main = "Cell Type Proportions Across Samples",
+        cluster_rows = TRUE,
+        cluster_cols = TRUE,
+        display_numbers = TRUE,
+        number_format = "%.2f"
+      )
+      dev.off()
+      cat("Heatmap saved to", heatmap_file, "\n")
+    }
+  }
+  
+  return(proportions)
+}
+
+# Run the deconvolution using the prepared data
+# Load the prepared data if not already loaded
+deconv_ready <- readRDS("deconv_ready_data.rds")
+
+# Run MuSiC deconvolution
+results <- run_music_deconvolution(
+  deconv_data = deconv_ready,
+  weighting = "default",
+  iterations = 100,
+  output_file = "music_results.rds"
+)
+
+# Print summary of results
+cat("\nDeconvolution results summary:\n")
+cat("Cell type proportions (first few samples):\n")
+print(round(results[, 1:min(3, ncol(results))], 4))
+
+# Ensure we have the needed packages
+packages_needed <- c("ggplot2", "tidyr", "pheatmap", "gridExtra")
+packages_missing <- packages_needed[!sapply(packages_needed, requireNamespace, quietly = TRUE)]
+
+if (length(packages_missing) > 0) {
+  cat("\nSome packages needed for visualization are missing. Please install:\n")
+  cat(paste("install.packages(c('", paste(packages_missing, collapse="', '"), "'))", sep=""), "\n")
+}
+
+# Load the saved results and display plots even if the pipeline above fails
+if (file.exists("music_results.rds")) {
+  saved_results <- readRDS("music_results.rds")
+  
+  # Display the proportions table
+  cat("\nCell type proportions from saved results:\n")
+  print(round(saved_results$proportions, 4))
+  
+  # Create basic barplot with base R (always works)
+  barplot(saved_results$proportions, 
+          beside = TRUE, 
+          col = rainbow(nrow(saved_results$proportions)),
+          legend.text = rownames(saved_results$proportions),
+          main = "Cell Type Proportions",
+          xlab = "Sample",
+          ylab = "Proportion")
+  
+  # Try to create heatmap which may be more reliable
+  if (requireNamespace("pheatmap", quietly = TRUE)) {
+    pheatmap::pheatmap(
+      saved_results$proportions,
+      main = "Cell Type Proportions Across Samples",
+      cluster_rows = TRUE,
+      cluster_cols = TRUE,
+      display_numbers = TRUE,
+      number_format = "%.2f"
+    )
+  }
+}
+
+# Save a simple CSV file with the results
+write.csv(results, "music_results.csv")
+cat("\nResults also saved to music_results.csv\n")
