@@ -1,0 +1,90 @@
+#deconvo using hspe
+
+library(hspe)
+library(ggplot2)
+
+load("C:/Users/vrm211/Desktop/Teaching/Etudiants/Alex_boudreau/deconvolution/public_CRC_data/derfinder_out_parallel_unique.Rda")
+View(df_1)
+df_clinical <- df_1
+load("C:/Users/vrm211/Desktop/Teaching/Etudiants/Alex_boudreau/deconvolution/Mix_const_depth/derfinder_out_parallel_unique.Rda")
+df_cont_depth <- df_1
+load("C:/Users/vrm211/Desktop/Teaching/Etudiants/Alex_boudreau/deconvolution/serie2_try2/derfinder_out_parallel_unique.Rda")
+df_diff_depth <- df_1
+ref <- read.table(file.choose(), sep = "\t", header = T)
+head(ref)
+
+newnames <- ifelse(startsWith(rownames(ref),"chr"), rownames(ref), strsplit(rownames(ref), ":"))
+newnames1 <- sapply(newnames, "[[",1)
+ref$name <- newnames1
+ref <- ref[!(duplicated(ref$name)),]
+rownames(ref) <- ref$name
+ref <- ref[,-13]
+
+df_clinical1 <- as.matrix(df_clinical[,4:54])
+rownames(df_clinical1) <- ifelse(startsWith(df_clinical$contig, "chr"), paste(df_clinical$contig,":", df_clinical$start,"-", df_clinical$end, sep = ""), df_clinical$contig)
+df_clinical1 <- log2(df_clinical1 +1)
+df_clinical1 <- t(df_clinical1)
+
+df_cont_depth1 <- as.matrix(df_cont_depth[,4:9])
+rownames(df_cont_depth1) <- ifelse(startsWith(df_cont_depth$contig, "chr"), paste(df_cont_depth$contig,":", df_cont_depth$start,"-", df_cont_depth$end, sep = ""), df_cont_depth$contig)
+df_cont_depth1 <- df_cont_depth1[!(duplicated(rownames(df_cont_depth1))),]
+df_cont_depth1 <- log2(df_cont_depth1+1)
+df_cont_depth1 <- t(df_cont_depth1)
+
+df_diff_depth1 <- as.matrix(df_diff_depth[,4:9])
+rownames(df_diff_depth1) <- ifelse(startsWith(df_diff_depth$contig, "chr"), paste(df_diff_depth$contig,":", df_diff_depth$start,"-", df_diff_depth$end, sep = ""), df_diff_depth$contig)
+df_diff_depth1 <- df_diff_depth1[!(duplicated(rownames(df_diff_depth1))),]
+df_diff_depth1 <- log2(df_diff_depth1+1)
+df_diff_depth1 <- t(df_diff_depth1)
+
+ref1 <- log2(as.matrix(ref)+1)
+ref1 <- t(ref1)
+
+
+
+ref2 <- ref1[,colnames(ref1) %in% colnames(df_cont_depth1)]
+df_cont_depth2 <- df_cont_depth1[,colnames(df_cont_depth1) %in% colnames(ref2)]
+
+#estimates 1 with const depth
+out = hspe(Y=df_cont_depth2, references = ref2)
+write.table(t(out$estimates), "HSPE_estimates_const_depth_mix.txt", sep = "\t", quote = F)
+png("mix1_barplot.png",width = 20, height = 16, units = "cm", res= 400)
+barplot(t(out$estimates), xlim=c(0, ncol(t(out$estimates))+4),legend.text = colnames(out$estimates), col = c("blue", "aquamarine","white","green","coral3","chartreuse2","darkgoldenrod","darkorange", "red","chocolate","cornflowerblue","blueviolet"))
+dev.off()
+#ggsave("Mix1_barplot.png", width = 5, height = 4, units = "cm", =800)
+
+
+#estimates 2 increasing depth
+
+ref2 <- ref1[,colnames(ref1) %in% colnames(df_diff_depth1)]
+df_diff_depth2 <- df_diff_depth1[,colnames(df_diff_depth1) %in% colnames(ref2)]
+out2 = hspe(Y=df_diff_depth2, references = ref2)
+write.table(t(out2$estimates), "HSPE_estimates_incr_depth_mix.txt", sep = "\t", quote = F)
+
+png("mix2_barplot.png",width = 20, height = 16, units = "cm", res= 400)
+barplot(t(out2$estimates), xlim=c(0, ncol(t(out2$estimates))+4),legend.text = colnames(out2$estimates), col = c("blue", "aquamarine","white","green","coral3","chartreuse2","darkgoldenrod","darkorange", "red","chocolate","cornflowerblue","blueviolet"))
+dev.off()
+
+
+#Clinical samples from PRJNA639943 
+ref2 <- ref1[,colnames(ref1) %in% colnames(df_clinical1)]
+df_clinical2 <- df_clinical1[,colnames(df_clinical1) %in% colnames(ref2)]
+out3 = hspe(Y=df_clinical2, references = ref2)
+write.table(t(out3$estimates), file = "SRP267764.estimates.txt", sep = "\t", quote = F)
+
+crc_col <- c(0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,0,1,2,2,2,2,2,2,2,2,0,2,2,0,0)
+barplot(t(out3$estimates)[1,], col = crc_col)
+barplot(t(out3$estimates)[9,], col = crc_col)
+barplot(t(out3$estimates)[10,], col = crc_col)
+
+library(reshape2)
+full_df <- melt(t(out3$estimates))
+full_df <- rep(crc_col, each = 12)
+full_df$Status[full_df$Status == 0] <- "Healthy"
+full_df$Status[full_df$Status == 1] <- "CRC"
+full_df$Status[full_df$Status == 2] <- "Pre-Cancerous"
+full_df$Status <- factor(full_df$Status, levels = c("Healthy","Pre-Cancerous","CRC"))
+    
+g<- ggplot(full_df, aes(Var1, value, fill = Status)) + geom_boxplot(position="dodge") + theme_bw() + xlab("") + ylab("Proportion of EVs in plasma")+coord_flip()
+g
+ggsave("PRJNA639943_boxplot.png", width = 15, height = 15, units = "cm", dpi = 600)
