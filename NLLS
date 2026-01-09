@@ -1,0 +1,134 @@
+# Load required libraries
+library(dplyr)
+library(tidyr)
+library(nnls)  # For non-negative least squares
+library(ggplot2)  # For visualization
+
+# Ensure dplyr functions are available (use explicit namespace)
+select <- dplyr::select
+left_join <- dplyr::left_join
+pivot_longer <- tidyr::pivot_longer
+
+# Function to perform deconvolution using non-negative least squares
+deconvolve_samples <- function(reference_matrix, mixture_matrix) {
+  # Prepare results container
+  n_cell_types <- ncol(reference_matrix)
+  n_samples <- ncol(mixture_matrix)
+  cell_types <- colnames(reference_matrix)
+  samples <- colnames(mixture_matrix)
+  
+  # Container for results
+  proportions <- matrix(0, nrow = n_cell_types, ncol = n_samples)
+  rownames(proportions) <- cell_types
+  colnames(proportions) <- samples
+  
+  # For each mixture sample
+  for (i in 1:n_samples) {
+    mixture <- mixture_matrix[, i]
+    
+    # Skip samples with all zeros
+    if (all(mixture == 0)) {
+      warning("Sample ", samples[i], " contains all zeros. Skipping.")
+      next
+    }
+    
+    # Perform non-negative least squares
+    result <- nnls(as.matrix(reference_matrix), mixture)
+    
+    # Get coefficients (proportions)
+    coeffs <- result$x
+    
+    # Normalize to sum to 1
+    if (sum(coeffs) > 0) {
+      coeffs <- coeffs / sum(coeffs)
+    }
+    
+    # Store in results matrix
+    proportions[, i] <- coeffs
+  }
+  
+  return(proportions)
+}
+
+# Calculate goodness of fit for the deconvolution
+calculate_fit_metrics <- function(reference_matrix, mixture_matrix, proportions) {
+  # Container for metrics
+  n_samples <- ncol(mixture_matrix)
+  samples <- colnames(mixture_matrix)
+  metrics <- data.frame(
+    Sample = samples,
+    RMSE = numeric(n_samples),
+    R_squared = numeric(n_samples)
+  )
+  
+  # Calculate estimated mixtures based on proportions
+  estimated_mixtures <- as.matrix(reference_matrix) %*% proportions
+  
+  # For each sample
+  for (i in 1:n_samples) {
+    actual <- mixture_matrix[, i]
+    estimated <- estimated_mixtures[, i]
+    
+    # Calculate RMSE
+    rmse <- sqrt(mean((actual - estimated)^2))
+    
+    # Calculate R-squared
+    ss_total <- sum((actual - mean(actual))^2)
+    ss_residual <- sum((actual - estimated)^2)
+    r_squared <- 1 - (ss_residual / ss_total)
+    
+    # Store metrics
+    metrics$RMSE[i] <- rmse
+    metrics$R_squared[i] <- r_squared
+  }
+  
+  return(metrics)
+}
+
+# Perform deconvolution
+message("Performing cell type deconvolution...")
+proportions <- deconvolve_samples(deconv_ready$reference_matrix, deconv_ready$mixture_matrix)
+
+# Calculate fit metrics
+message("Calculating goodness of fit metrics...")
+fit_metrics <- calculate_fit_metrics(deconv_ready$reference_matrix, deconv_ready$mixture_matrix, proportions)
+
+# Format results
+deconv_results <- as.data.frame(t(proportions))
+deconv_results$Sample <- rownames(deconv_results)
+rownames(deconv_results) <- NULL
+
+# Use explicit namespace for dplyr functions
+deconv_results <- dplyr::select(deconv_results, Sample, everything())
+
+# Add fit metrics to results
+deconv_results <- dplyr::left_join(deconv_results, fit_metrics, by = "Sample")
+
+# Print summary of results
+message("\nDeconvolution Results:")
+print(deconv_results)
+
+# Save results
+write.csv(deconv_results, "deconvolution_results.csv", row.names = FALSE)
+message("Results saved to deconvolution_results.csv")
+
+# Create a stacked bar plot of cell type proportions
+deconv_plot_data <- deconv_results %>%
+  dplyr::select(-RMSE, -R_squared) %>%
+  tidyr::pivot_longer(cols = -Sample, names_to = "Cell_Type", values_to = "Proportion")
+
+# Create plot
+p <- ggplot(deconv_plot_data, aes(x = Sample, y = Proportion, fill = Cell_Type)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Cell Type Proportions in Mixture Samples",
+       x = "Sample",
+       y = "Proportion",
+       fill = "Cell Type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Save plot
+ggsave("cell_type_proportions.png", p, width = 10, height = 6, dpi = 300)
+message("Plot saved to cell_type_proportions.png")
+
+ 
