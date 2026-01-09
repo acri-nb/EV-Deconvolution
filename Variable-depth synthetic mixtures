@@ -1,0 +1,101 @@
+#!/bin/bash
+
+# Define directories
+BAM_DIR="/mnt/acri7/DER_PIPELINE/sam/tissue_bam_files"
+OUTPUT_DIR="/mnt/acri7/DER_PIPELINE/sam/output_mixe_way_2"
+TEMP_DIR="/mnt/acri7/DER_PIPELINE/sam/temp_bam_files"
+
+# Create required directories
+mkdir -p "$OUTPUT_DIR" "$TEMP_DIR"
+
+# Load BAM file to tissue mapping from bam_tissue_map.tsv
+declare -A tissue_bams
+while IFS=$'\t' read -r bam_file tissue; do
+    tissue_bams["$tissue"]+="$BAM_DIR/$bam_file "
+done < bam_tissue_map.tsv
+
+# Define total reads per mix
+declare -A mix_sizes=( [Mix1]=5000000 [Mix2]=10000000 [Mix3]=15000000 [Mix4]=20000000 [Mix5]=25000000 [Mix6]=30000000 )
+
+# Define tissue contributions (proportions) for each mix
+declare -A mix1=( [Blymphocyte]=0.05 [Blymphocyte-stim]=0.1 [Breast]=0.15 [Colon]=0.2 [Kidney]=0.5 )
+declare -A mix2=( [Lung]=0.05 [Myeloid]=0.1 [Pancreas]=0.15 [Platelets]=0.2 [Prostate]=0.5 )
+declare -A mix3=( [Blymphocyte]=0.05 [Blymphocyte-stim]=0.1 [Breast]=0.15 [Colon]=0.2 [Kidney]=0.5 )
+declare -A mix4=( [Colon]=0.05 [Kidney]=0.1 [Lung]=0.15 [Pancreas]=0.5 [Prostate]=0.2 )
+declare -A mix5=( [Blymphocyte]=0.05 [Blymphocyte-stim]=0.1 [Breast]=0.15 [Colon]=0.2 [Kidney]=0.5 )
+declare -A mix6=( [Blymphocyte]=0.1 [Blymphocyte-stim]=0.2 [Myeloid]=0.2 [Platelets]=0.2 [TLymphocyte]=0.1 [Tlymphocyte-Stim]=0.2 )
+
+# Function to generate each mix
+create_mix() {
+    local mix_name=$1
+    local total_reads=${mix_sizes[$mix_name]}
+    declare -n mix_ref=$2
+
+    echo "🔄 Processing $mix_name ($total_reads reads)..."
+    mix_bams=()
+
+    for tissue in "${!mix_ref[@]}"; do
+        reads_needed=$(echo "${mix_ref[$tissue]} * $total_reads" | bc | awk '{print int($1)}')
+
+        bams=(${tissue_bams["$tissue"]})
+        num_samples=${#bams[@]}
+
+        if [ "$num_samples" -gt 0 ]; then
+            total_reads_tissue=0
+            declare -A sample_reads
+
+            for bam in "${bams[@]}"; do
+                bam_reads=$(samtools idxstats "$bam" | cut -f3 | awk '{s+=$1} END {print s}')
+                sample_reads["$bam"]=$bam_reads
+                total_reads_tissue=$((total_reads_tissue + bam_reads))
+            done
+
+            if [ "$total_reads_tissue" -eq 0 ]; then
+                echo "⚠️ Warning: No valid reads found for tissue $tissue. Skipping..."
+                continue
+            fi
+
+            for bam in "${bams[@]}"; do
+                sample_fraction=$(awk -v needed="$reads_needed" -v total="$total_reads_tissue" -v sample="${sample_reads[$bam]}" \
+                    'BEGIN {if (total > 0) print (needed * (sample / total)) / sample; else print 0}')
+
+                if [ -z "$sample_fraction" ] || (( $(echo "$sample_fraction <= 0" | bc -l) )); then
+                    echo "⚠️ Warning: Fraction is zero for $bam. Skipping subsampling."
+                    continue
+                fi
+
+                echo "�� Processing $tissue ($reads_needed reads for $mix_name)."
+                echo "   ➜ Each sample contributes $(echo "$sample_fraction * 100" | bc)% of its reads."
+
+                base_name=$(basename "$bam" .bam)
+                subsampled_bam="$TEMP_DIR/${base_name}_subsampled_${mix_name}.bam"
+
+                echo "   🧬 Subsampling $bam at $sample_fraction..."
+                samtools view -b -s "$sample_fraction" "$bam" > "$subsampled_bam"
+                mix_bams+=("$subsampled_bam")
+            done
+        else
+            echo "⚠️ Warning: No samples found for $tissue in $mix_name."
+        fi
+    done
+
+    merged_bam="$OUTPUT_DIR/${mix_name}.bam"
+    echo "   ➜ Merging BAMs for $mix_name..."
+    samtools merge "$merged_bam" "${mix_bams[@]}"
+
+    sorted_bam="$OUTPUT_DIR/${mix_name}_sorted.bam"
+    echo "   ➜ Sorting and indexing BAM for $mix_name..."
+    samtools sort -o "$sorted_bam" "$merged_bam"
+    samtools index "$sorted_bam"
+
+    echo "✅ $mix_name created at $sorted_bam"
+}
+
+# Create all mixes
+create_mix "Mix1" mix1
+create_mix "Mix2" mix2
+create_mix "Mix3" mix3
+create_mix "Mix4" mix4
+create_mix "Mix5" mix5
+create_mix "Mix6" mix6
+
