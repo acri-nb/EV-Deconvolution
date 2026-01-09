@@ -1,0 +1,50 @@
+library(GenomicRanges)
+library(hspe)
+library(ggplot2)
+library(dendextend)
+library("reshape2")
+
+crc <- as.matrix(df_1[,4:54]) # load R object from CRC cohort
+#crc <- as.matrix(df_1[,4:103])
+rownames(crc) <- ifelse(startsWith(df_1$contig, "chr"),paste(df_1$contig,":",df_1$start,"-",df_1$end,sep = ""),df_1$contig)
+crc_common <- crc[rownames(crc) %in% rownames(avg),]
+crc_sub <- crc[startsWith(rownames(crc), "chr") & !(rownames(crc) %in% rownames(avg)),]
+
+ref_crc<- sapply(strsplit(rownames(crc_sub),":"), `[`, 1)
+ref_crc <- ref_crc[startsWith(ref_crc, "chr")]
+ref_crc2 <- sapply(strsplit(rownames(crc_sub),":"), `[`, 2)
+ref_crc2 <- ref_crc2[!(is.na(ref_crc2))]
+
+
+CRC_ranges <-  GRanges(seqnames = ref_crc, ranges = IRanges(start = as.numeric(sapply(strsplit(ref_crc2,"-"), `[`, 1)), end = as.numeric(sapply(strsplit(ref_crc2,"-"), `[`, 2))))
+
+crc <- log2(crc+1)
+
+#Here avg is the average expression from only smallEVs because that is what was isolated in CRC study
+ref<- sapply(strsplit(rownames(avg),":"), `[`, 1)
+ref <- ref[startsWith(ref, "chr")]
+ref2 <- sapply(strsplit(rownames(avg),":"), `[`, 2)
+ref2 <- ref2[!(is.na(ref2))]
+
+ref_ranges <- GRanges(seqnames = ref, ranges = IRanges(start = as.numeric(sapply(strsplit(ref2,"-"), `[`, 1)), end = as.numeric(sapply(strsplit(ref2,"-"), `[`, 2))))
+
+OL3 <- findOverlaps(CRC_ranges,ref_ranges)
+sub1 <- crc[-OL3@from,]
+sub2 <- crc[OL3@from,]
+rownames(crc_sub)[OL3@from] <- rownames(avg)[OL3@to]
+
+crc_sub <- rowsum(crc_sub, rownames(crc_sub))
+
+full_crc <- rbind(crc_sub, crc_common)
+
+
+# some housekeeping to uniformize dimensions between sets
+crc1 <- full_crc[rownames(full_crc) %in% rownames(avg),]
+crc1 <- log2(crc1+1)
+avg1 <- avg[rownames(avg) %in% rownames(crc1),]
+avg1 <- avg1[!(duplicated(rownames(avg1))),]
+
+#Filter out low-expression counts
+crc2 <- crc1[rowMeans(crc1) > 2,]
+avg1 <- avg[rownames(avg) %in% rownames(crc2),]
+out3 = hspe(Y=t(crc2), references = t(avg1), marker_method = "regression")
