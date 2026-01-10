@@ -1,31 +1,15 @@
-# Dual Simplex Deconvolution Framework
-# Based on the approach from artyomovlab/dualsimplex
-
-# Required libraries
 library(dplyr)
 library(tidyr)
 library(Matrix)
 library(ggplot2)
-library(MASS)  # For ginv (generalized inverse)
+library(MASS)  
 
-# Install and load the quadprog package for quadratic programming
 if(!requireNamespace("quadprog", quietly = TRUE)) {
   install.packages("quadprog")
 }
 library(quadprog)
 
-# ===== DUAL SIMPLEX FUNCTIONS =====
 
-#' Dual Simplex Algorithm for Deconvolution
-#'
-#' @param X The mixture matrix (genes × samples)
-#' @param S The signature/reference matrix (genes × cell types)
-#' @param non_negative Whether to enforce non-negativity constraints
-#' @param sum_to_one Whether to enforce sum-to-one constraints
-#' @param max_iter Maximum number of iterations
-#' @param tol Tolerance for convergence
-#'
-#' @return A list with the estimated proportions and other results
 dual_simplex_deconv <- function(X, S, non_negative = TRUE, sum_to_one = TRUE, 
                                 max_iter = 1000, tol = 1e-6) {
   # Check dimensions
@@ -138,13 +122,9 @@ dual_simplex_deconv <- function(X, S, non_negative = TRUE, sum_to_one = TRUE,
   ))
 }
 
-# ===== DATA LOADING AND PREPARATION =====
-
-cat("Starting Dual Simplex deconvolution workflow...\n")
 
 deconv_ready <- readRDS("deconv_ready_data.rds")
 
-# For testing purposes, we'll create synthetic data if the real data is not available
 if (!exists("deconv_ready")) {
   cat("No input data found. Creating synthetic data for demonstration...\n")
   
@@ -195,8 +175,6 @@ if(is.null(colnames(ref_matrix))) {
 if(is.null(colnames(mix_matrix))) {
   colnames(mix_matrix) <- paste0("Sample", 1:ncol(mix_matrix))
 }
-
-# ===== DATA TRANSFORMATION AND FILTERING =====
 
 # Log-transform the data
 log_transform <- function(x) {
@@ -265,10 +243,6 @@ cat("Final aligned dimensions:\n")
 cat(sprintf("Reference matrix: %dx%d\n", nrow(ref_aligned), ncol(ref_aligned)))
 cat(sprintf("Mixture matrix: %dx%d\n", nrow(mix_aligned), ncol(mix_aligned)))
 
-# ===== RUN DUAL SIMPLEX DECONVOLUTION =====
-
-cat("\nRunning Dual Simplex deconvolution...\n")
-
 # Run the deconvolution
 result <- dual_simplex_deconv(
   X = mix_aligned,
@@ -288,10 +262,6 @@ cat("Deconvolution completed!\n")
 cat("Dimensions of proportions matrix:", dim(proportion_matrix), "\n")
 cat("First few rows of proportions:\n")
 print(head(proportion_matrix))
-
-# ===== VISUALIZATIONS =====
-
-cat("\nCreating visualizations...\n")
 
 # Create a bar plot of cell type proportions
 prop_df <- as.data.frame(proportion_matrix) %>%
@@ -322,26 +292,6 @@ if(requireNamespace("pheatmap", quietly = TRUE)) {
   cat("Package 'pheatmap' not available, skipping heatmap visualization.\n")
 }
 
-# ===== EVALUATE DECONVOLUTION QUALITY =====
-
-# Calculate reconstruction error
-reconstruction <- result$reconstruction
-mse <- result$error
-
-cat("\nDeconvolution quality metrics:\n")
-cat(sprintf("Mean Squared Error: %.6f\n", mse))
-
-# Correlation between original and reconstructed mixtures
-cor_vals <- sapply(1:ncol(mix_aligned), function(i) {
-  cor(mix_aligned[, i], reconstruction[, i])
-})
-
-cat("Correlation between original and reconstructed samples:\n")
-cat(sprintf("Mean correlation: %.4f\n", mean(cor_vals)))
-cat(sprintf("Range: %.4f - %.4f\n", min(cor_vals), max(cor_vals)))
-
-# ===== SAVE RESULTS =====
-
 # Save the deconvolution results
 deconv_results <- list(
   proportions = proportion_matrix,
@@ -356,53 +306,3 @@ cat("Results saved to dualsimplex_deconv_results.rds\n")
 # Write CSV of estimated proportions for easy examination
 write.csv(proportion_matrix, "dualsimplex_estimated_proportions.csv")
 cat("Proportions written to dualsimplex_estimated_proportions.csv\n")
-
-# ===== COMPARE WITH GROUND TRUTH (IF AVAILABLE) =====
-
-if (exists("true_proportions")) {
-  cat("\nComparing with ground truth proportions...\n")
-  
-  # Make sure the dimensions match
-  if (nrow(true_proportions) == nrow(proportion_matrix) && 
-      ncol(true_proportions) == ncol(proportion_matrix)) {
-    
-    # Calculate mean absolute error
-    mae <- mean(abs(true_proportions - proportion_matrix))
-    
-    # Calculate correlation with ground truth
-    cor_truth <- cor(as.vector(true_proportions), as.vector(proportion_matrix))
-    
-    cat("Comparison with ground truth:\n")
-    cat(sprintf("Mean Absolute Error: %.4f\n", mae))
-    cat(sprintf("Correlation: %.4f\n", cor_truth))
-    
-    # Create a plot comparing true vs estimated proportions
-    truth_df <- as.data.frame(true_proportions) %>%
-      tibble::rownames_to_column("Sample") %>%
-      tidyr::pivot_longer(-Sample, names_to = "CellType", values_to = "Proportion") %>%
-      mutate(Type = "True")
-    
-    est_df <- as.data.frame(proportion_matrix) %>%
-      tibble::rownames_to_column("Sample") %>%
-      tidyr::pivot_longer(-Sample, names_to = "CellType", values_to = "Proportion") %>%
-      mutate(Type = "Estimated")
-    
-    compare_df <- rbind(truth_df, est_df)
-    
-    p_compare <- ggplot(compare_df, aes(x = Sample, y = Proportion, fill = CellType)) +
-      geom_bar(stat = "identity") +
-      facet_wrap(~ Type, ncol = 1) +
-      theme_minimal() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-      labs(title = "True vs Estimated Cell Type Proportions", 
-           x = "Sample", 
-           y = "Proportion")
-    
-    ggsave("dualsimplex_true_vs_estimated.png", p_compare, width = 10, height = 8)
-    cat("Comparison plot saved to dualsimplex_true_vs_estimated.png\n")
-  } else {
-    cat("Dimensions of true proportions do not match estimated proportions, skipping comparison.\n")
-  }
-}
-
-cat("\nDual Simplex deconvolution workflow completed successfully!\n")
