@@ -144,7 +144,6 @@ hspe_data <- data.frame(
   `Tlymphocyte.Stim` = c(1.98289893473012e-13, 0.000474381577578971, 8.49851697974119e-13, 0.000646476725300891, 0.00239253360892957, 0.08204870311449)
 )
 
-# NORMALIZATION FUNCTION
 normalize_and_standardize <- function(df, method_name = "Unknown") {
   cat("Processing", method_name, "...\n")
   
@@ -240,7 +239,6 @@ color_palette <- c(
 method_order <- c("Ground Truth", "CIBERSORT", "MuSiC", "Dual Simplex", 
                   "NMF", "NLLS", "NLLS + Quadprog", "HSPE")
 
-# Create plots for Mix 2, 4, and 6
 plot_list <- list()
 for (mix_id in c("Mix2", "Mix4", "Mix6")) {
   mix_data <- all_data_long %>% 
@@ -274,7 +272,6 @@ for (mix_id in c("Mix2", "Mix4", "Mix6")) {
   plot_list[[mix_id]] <- p
 }
 
-# Panel D: Read the PNG image
 img <- readPNG("/Users/alexboudreau/Desktop/hspe_per_depth.png")
 panel_d <- ggplot() + 
   annotation_custom(rasterGrob(img, width = unit(1, "npc"), height = unit(1, "npc"), 
