@@ -4,7 +4,7 @@ library(tidyr)
 library(nnls)  # For non-negative least squares
 library(ggplot2)  # For visualization
 
-# Ensure dplyr functions are available (use explicit namespace)
+# Ensure dplyr functions are available
 select <- dplyr::select
 left_join <- dplyr::left_join
 pivot_longer <- tidyr::pivot_longer
