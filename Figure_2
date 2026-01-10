@@ -11,10 +11,7 @@ library(gt)
 library(fgsea)
 library(msigdbr)
 
-### run diff_expression_analysis_with_cell_lines.R first
-
 setwd("C:/Users/Chloe/OneDrive - Université de Moncton/IARC/coding/Projects/EVs")
-
 
 pheno$Batch <- relevel(factor(pheno$Batch,levels=unique(pheno$Batch)),ref="1")
 pheno$Type <- relevel(factor(pheno$Type,levels=unique(pheno$Type)),ref="SEV")
@@ -22,19 +19,16 @@ pheno$Tissue <- relevel(factor(pheno$Tissue,levels=unique(pheno$Tissue)), ref= "
 pheno$Status <- relevel(factor(pheno$Status,levels=unique(pheno$Status)),ref="Normal")
 pheno$Sex <- relevel(factor(pheno$Sex,levels=unique(pheno$Sex)), "F")
 
-
 Types<- pheno$Type
 Tissues<- pheno$Tissue
 Statuses<- pheno$Status
 Sexs<- pheno$Sex
 design_matrix <- model.matrix(~ Types + Tissues +Statuses +Sexs)
 
-
 dge2 <- dge
 dge2 <- estimateGLMCommonDisp(dge2, design_matrix)
 dge2 <- estimateGLMTrendedDisp(dge2, design_matrix)
 dge2 <- estimateGLMTagwiseDisp(dge2, design_matrix)
-
 
 par(mfrow=c(1,1))
 plotBCV(dge2, main = "BCV plot ")
@@ -43,7 +37,6 @@ dge_filtered <- dge2[dge2$AveLogCPM > 2, , keep.lib.sizes = FALSE]
 
 par(mfrow=c(1,1))
 plotBCV(dge_filtered, main = "BCV plot ")
-
 
 #redo graph
 dge_filtered <- estimateGLMCommonDisp(dge_filtered, design_matrix)
@@ -64,8 +57,6 @@ res_LEV<-topTags(LEV,nrow(dge_filtered$counts))
 res_Cancer<-topTags(Cancer,nrow(dge_filtered$counts))
 all_res_M <- list(res_Cell,res_LEV, res_Cancer)
 
-
-
 pval_Cell<- data.frame(raw.pvalue = Cell$table$PValue,
                    FDR=p.adjust(Cell$table$PValue, "BH"))
 pval_LEV<- data.frame(raw.pvalue = LEV$table$PValue,
@@ -85,7 +76,6 @@ for (i in seq(1:length(all_res_M)))
   filename <- paste0("results_",res_M$comparison , ".csv")
   write.csv(table_data, file = filename, row.names = TRUE)
 }
-
 
 #set thresholds for colours in MA and volcano plot
 FDR_THRESHOLD=0.05
@@ -201,10 +191,6 @@ for (i in seq_along(all_res_M_genes)) {
   print(interactive_volc)
 }
 
-
-
-######### HM script
-
 der <- df_1[,4:78] # from ref matrix
 der <- as.matrix(der)
 
@@ -224,8 +210,6 @@ ha = HeatmapAnnotation(Tissue = anno$Tissue, Type = anno$Type) # phenotype info
 Heatmap(log2(Mat+1), cluster_columns = T, name = "Log2 Expression",top_annotation = ha, show_column_names=F)
 #Save PNG
 
-
-
 pseudo_counts <- log2(Mat+1)
 pseudo_counts_cen <- pseudo_counts - rowMeans(pseudo_counts)
 svd1<-svd(pseudo_counts_cen)
@@ -240,21 +224,11 @@ PCA <- as.data.frame(PCA)
 PCA$PC1 <- as.numeric(PCA$PC1)
 PCA$PC2 <- as.numeric(PCA$PC2)
 
-
 g <- ggplot(PCA) + geom_point(aes(x = PC1, y=PC2, colour=`Type`), size = 2.5)+ labs(title="", x="1st Principal Component", y = "2nd Principal Component") + theme_bw()
 g
 ggsave("PCA.png", dpi = 600, width=5, height = 4,g)
 
-
-
-
-####GSEA
-
 #load in reference data
-
-
-
-
 # Cancer - load in the DGE and order to match annotations in original file. 
 # Load packages
 library(clusterProfiler)
@@ -288,7 +262,6 @@ df1<- merge(df, results, .by=gene)
 library(clusterProfiler)
 library(org.Hs.eg.db)
 
-# Suppose your dataframe is called df with SYMBOL, logFC, pval
 # 1. Create ranking metric
 df1$score <- sign(df1$logFC) * -log10(df1$FDR)
 
@@ -326,10 +299,6 @@ gsea.kegg <- gseKEGG(geneList = ranks,
 
 ridgeplot(gsea.kegg)+ labs(x = "enrichment distribution") #(800*400)
 write.table(gsea.kegg@result, file = "LEV_kegg.tsv", quote = F, sep = "\t")
-
-##### 73% of genes DE between Cells vs SEV
-##### 51% of genes DE between LEV and SEV
-
 
 
 
