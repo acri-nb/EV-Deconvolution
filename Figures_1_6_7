@@ -1,5 +1,3 @@
-######### HM script
-
 der <- df_1[,4:78] # from ref matrix
 der <- as.matrix(der)
 
@@ -27,12 +25,9 @@ png(
   res = 300       # Resolution in pixels per inch (dpi)
 )
 
-# Your base R plotting code goes here
-
 Heatmap(log2(Mat+1), cluster_columns = T, name = "Log2 Expression",top_annotation = ha, show_column_names=F)
 # Close the graphics device to save the file
 dev.off()
-
 
 pseudo_counts <- log2(Mat+1)
 pseudo_counts_cen <- pseudo_counts - rowMeans(pseudo_counts)
@@ -53,9 +48,6 @@ g <- ggplot(PCA) + geom_point(aes(x = PC1, y=PC2, colour=`Type`), size = 2.5)+ l
 g
 ggsave("PCA.png", dpi = 600, width=5, height = 4,g)
 
-
-# For figure with  CRC estimates and boxplots
-
 group_colors = c("B_cell"="goldenrod1","T_cell"="honeydew4","Myeloid"="red4","Platelet"="firebrick2","Breast"="violetred","Prostate"="dodgerblue4","Pancreas"="chartreuse4","Lung"="skyblue","Kidney"="coral","Colon"="sienna4")
 
 dat<- read.table(file.choose(), sep = "\t", header = T) # CRC estimates imported after deconvolution
@@ -71,9 +63,6 @@ anno[anno==0] <- "Healthy"
 anno1 <- factor(anno, levels = c("Healthy", "Precancerous", "Cancer"))
 ha = HeatmapAnnotation(Status = anno1) # phenotype info
 Heatmap(t(Mat+0.0000001), cluster_columns = T, name = "Abundance Estimate",top_annotation = ha, show_column_names=F)
-
-
-
 
 g1 <- as.data.frame(t(Mat))
 g1$Type <- rownames(g1)
