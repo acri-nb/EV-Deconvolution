@@ -1,32 +1,19 @@
-# Pure NMF-based Deconvolution Framework
-
 # Required libraries
 library(dplyr)
 library(tidyr)
 library(Matrix)
 library(ggplot2)
-# Ensure NMF is installed
+
+
 if(!requireNamespace("NMF", quietly = TRUE)) {
   install.packages("NMF")
 }
 library(NMF)
 
-# ===== DATA LOADING AND PREPARATION =====
-
-# Load your prepared data (adjust the path as needed)
 deconv_ready <- readRDS("deconv_ready_data.rds")
-
-# Extract matrices from your data
 ref_matrix <- as.matrix(deconv_ready$reference_matrix)
 mix_matrix <- as.matrix(deconv_ready$mixture_matrix)
 
-# DIAGNOSTIC: Check original matrix dimensions and gene overlaps
-cat("Original matrix dimensions:\n")
-cat(sprintf("Reference matrix: %dx%d\n", nrow(ref_matrix), ncol(ref_matrix)))
-cat(sprintf("Mixture matrix: %dx%d\n", nrow(mix_matrix), ncol(mix_matrix)))
-
-# FIX: Add gene names if they are missing
-# First, check if gene names really are missing
 if(is.null(rownames(ref_matrix)) || is.null(rownames(mix_matrix))) {
   cat("\nGene names are missing! Adding gene names to matrices...\n")
   
@@ -48,37 +35,10 @@ if(is.null(colnames(mix_matrix))) {
   colnames(mix_matrix) <- paste0("mixSample", 1:ncol(mix_matrix))
 }
 
-# Print gene name diagnostics after fixing
-cat("\nGene name diagnostics after fixing:\n")
-cat(sprintf("Number of genes in reference: %d\n", length(rownames(ref_matrix))))
-cat(sprintf("Number of genes in mixture: %d\n", length(rownames(mix_matrix))))
-
-cat("\nAre gene names present?\n")
-cat(sprintf("Reference matrix has gene names: %s\n", !is.null(rownames(ref_matrix))))
-cat(sprintf("Mixture matrix has gene names: %s\n", !is.null(rownames(mix_matrix))))
-
-# Print some gene names to verify
-cat("\nSample gene names from reference matrix:\n")
-if(!is.null(rownames(ref_matrix))) {
-  print(head(rownames(ref_matrix), 10))
-} else {
-  cat("No gene names in reference matrix\n")
-}
-
-cat("\nSample gene names from mixture matrix:\n")
-if(!is.null(rownames(mix_matrix))) {
-  print(head(rownames(mix_matrix), 10))
-} else {
-  cat("No gene names in mixture matrix\n")
-}
-
-# Check gene overlap after fixing
 common_genes <- intersect(rownames(ref_matrix), rownames(mix_matrix))
 cat(sprintf("\nNumber of common genes AFTER adding names: %d\n", length(common_genes)))
 
-# ===== DATA TRANSFORMATION AND FILTERING =====
-
-# Log-transform your data
+# Log-transform 
 log_transform <- function(x) {
   log2(x + 1)
 }
@@ -89,11 +49,6 @@ mix_matrix_log <- log_transform(mix_matrix)
 # Make sure the log transformation preserves gene names
 rownames(ref_matrix_log) <- rownames(ref_matrix)
 rownames(mix_matrix_log) <- rownames(mix_matrix)
-
-# Check if gene names are preserved after log transformation
-cat("\nAfter log transformation:\n")
-cat(sprintf("Reference matrix has gene names: %s\n", !is.null(rownames(ref_matrix_log))))
-cat(sprintf("Mixture matrix has gene names: %s\n", !is.null(rownames(mix_matrix_log))))
 
 # Simple filtering by expression and variance - preserves gene names
 filter_genes <- function(matrix, min_expr = 0.05, top_var_genes = 3000) {
@@ -124,20 +79,12 @@ filter_genes <- function(matrix, min_expr = 0.05, top_var_genes = 3000) {
     genes_to_keep <- rownames(matrix_filtered)[final_genes]
     rownames(matrix_final) <- genes_to_keep
   }
-  
-  cat("Original dimensions:", dim(matrix), "\n")
-  cat("After expression filter:", dim(matrix_filtered), "\n")
-  cat("Final dimensions:", dim(matrix_final), "\n")
-  
+
   return(matrix_final)
 }
 
 # Apply filtering to the mixture matrix
 mix_filtered <- filter_genes(mix_matrix_log)
-
-# Check if gene names are still present after filtering
-cat("\nAfter filtering:\n")
-cat(sprintf("Mixture matrix has gene names: %s\n", !is.null(rownames(mix_filtered))))
 
 if(!is.null(rownames(mix_filtered))) {
   cat("\nSample gene names from filtered mixture matrix:\n")
@@ -150,8 +97,6 @@ if(!is.null(rownames(mix_filtered))) {
 if(is.null(colnames(mix_filtered))) {
   colnames(mix_filtered) <- paste0("sample", 1:ncol(mix_filtered))
 }
-
-# ===== NMF DECONVOLUTION =====
 
 # Set cell type number 
 n_cell_types <- 12
@@ -177,20 +122,11 @@ if(any(abs(row_sums - 1) > 0.01)) {
   proportion_matrix <- proportion_matrix / rowSums(proportion_matrix)
 }
 
-cat("Dimensions of proportions matrix:\n")
-print(dim(proportion_matrix))
-cat("First few rows of proportions:\n")
-print(head(proportion_matrix))
-
 # Make sure signature matrix has gene names
 if(is.null(rownames(signature_matrix))) {
   cat("\nWARNING: Signature matrix missing gene names. Using filtered mixture matrix genes.\n")
   rownames(signature_matrix) <- rownames(mix_filtered)
 }
-
-# ===== VISUALIZATIONS =====
-
-cat("\nCreating visualizations...\n")
 
 # Create a bar plot of cell type proportions
 prop_df <- as.data.frame(proportion_matrix) %>%
@@ -208,8 +144,6 @@ p <- ggplot(prop_df, aes(x = Sample, y = Proportion, fill = CellType)) +
 ggsave("cell_proportions_barplot.png", p, width = 10, height = 6)
 cat("Visualization saved to cell_proportions_barplot.png\n")
 
-# ===== SAVE RESULTS =====
-
 # Save the deconvolution results
 deconv_results <- list(
   proportions = proportion_matrix,
@@ -223,17 +157,8 @@ cat("Results saved to nmf_deconv_results.rds\n")
 write.csv(proportion_matrix, "estimated_proportions.csv")
 cat("Proportions written to estimated_proportions.csv\n")
 
-# ===== CELL TYPE MAPPING =====
-
-cat("\nAttempting to match deconvolved cell types with reference cell types...\n")
-
 # Get deconvolved cell-specific expression profiles
 cell_specific_expr <- signature_matrix
-
-cat("Cell-specific expression matrix dimensions:\n")
-print(dim(cell_specific_expr))
-cat("Reference matrix dimensions:\n")
-print(dim(ref_matrix_log))
 
 # Check if signature matrix has gene names
 cat(sprintf("Signature matrix has gene names: %s\n", !is.null(rownames(cell_specific_expr))))
@@ -375,62 +300,3 @@ if(length(common_genes) > 0) {
     write.csv(renamed_proportions, "estimated_proportions_named.csv")
     cat("Named proportions written to estimated_proportions_named.csv\n")
     
-    # ===== OPTIONAL MERGED PROPORTIONS =====
-    
-    # Create a version where duplicate cell types are merged
-    cat("\nCreating merged proportions (combining duplicate cell types)...\n")
-    
-    # Start with the original proportion matrix
-    merged_proportions <- proportion_matrix
-    
-    # Get the original reference cell type names (before making them unique)
-    original_ref_names <- cell_type_mapping$Best_Match_Reference[
-      match(colnames(proportion_matrix), cell_type_mapping$Deconvolved_CellType)
-    ]
-    
-    # Get unique cell types
-    unique_cell_types <- unique(original_ref_names)
-    
-    # Create an empty matrix for merged proportions
-    merged_matrix <- matrix(0, nrow = nrow(proportion_matrix), ncol = length(unique_cell_types))
-    rownames(merged_matrix) <- rownames(proportion_matrix)
-    colnames(merged_matrix) <- unique_cell_types
-    
-    # Fill the merged matrix by summing proportions
-    for(i in 1:length(unique_cell_types)) {
-      cell_type <- unique_cell_types[i]
-      # Find columns in the original that map to this cell type
-      cols_to_merge <- which(original_ref_names == cell_type)
-      # Sum these columns
-      if(length(cols_to_merge) > 0) {
-        merged_matrix[, i] <- rowSums(proportion_matrix[, cols_to_merge, drop = FALSE])
-      }
-    }
-    
-    # Create visualization for merged cell types
-    merged_prop_df <- as.data.frame(merged_matrix) %>%
-      tibble::rownames_to_column("Sample") %>%
-      tidyr::pivot_longer(-Sample, names_to = "CellType", values_to = "Proportion")
-    
-    p_merged <- ggplot(merged_prop_df, aes(x = Sample, y = Proportion, fill = CellType)) +
-      geom_bar(stat = "identity") +
-      theme_minimal() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-      labs(title = "Estimated Cell Type Proportions (Merged Duplicates)", 
-           x = "Sample", 
-           y = "Proportion")
-    
-    ggsave("cell_proportions_merged.png", p_merged, width = 10, height = 6)
-    cat("Merged visualization saved to cell_proportions_merged.png\n")
-    
-    # Save the merged proportions
-    write.csv(merged_matrix, "estimated_proportions_merged.csv")
-    cat("Merged proportions written to estimated_proportions_merged.csv\n")
-  } else {
-    cat("ERROR: Correlation matrix is missing row or column names, cannot proceed with mapping cell types.\n")
-  }
-} else {
-  cat("ERROR: No common genes found between deconvolved signatures and reference. Cannot map cell types.\n")
-}
-
-cat("\nNMF deconvolution workflow completed successfully!\n")
