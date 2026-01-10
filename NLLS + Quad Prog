@@ -94,9 +94,7 @@ deconvolve_samples <- function(reference_matrix, mixture_matrix,
       } else if (method == "lsei") {
         # Handle potential issues with lsei
         # Add small regularization and try simpler constraints
-        A <- as.matrix(reference_matrix)
-        
-        # Try with just non-negativity constraints first
+        A <- as.matrix(reference_matrix
         G <- diag(n_cell_types)
         H <- rep(0, n_cell_types)
         
