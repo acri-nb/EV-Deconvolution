@@ -1,0 +1,335 @@
+# Load required libraries
+library(dplyr)
+library(tidyr)
+library(GenomicRanges)
+library(stringr)
+
+# Define function to convert chromosome locations to GRanges objects
+chr_to_granges <- function(chr_locations) {
+  # Parse chromosome locations (format: "chr1:629091-629214")
+  chrom <- str_extract(chr_locations, "^chr[^:]+")
+  ranges <- str_extract(chr_locations, "(?<=:)[0-9]+-[0-9]+$")
+  starts <- as.numeric(str_extract(ranges, "^[0-9]+"))
+  ends <- as.numeric(str_extract(ranges, "[0-9]+$"))
+  
+  # Find valid entries (no NAs)
+  valid_idx <- !is.na(chrom) & !is.na(starts) & !is.na(ends)
+  
+  if(sum(valid_idx) == 0) {
+    stop("No valid chromosome locations found")
+  }
+  
+  # Print summary of filtered data
+  if(sum(!valid_idx) > 0) {
+    cat("Filtered out", sum(!valid_idx), "rows with missing location data\n")
+  }
+  
+  # Create GRanges object with only valid entries
+  gr <- GRanges(
+    seqnames = chrom[valid_idx],
+    ranges = IRanges(start = starts[valid_idx], end = ends[valid_idx])
+  )
+  
+  # Create a mapping from original indices to filtered indices
+  idx_map <- data.frame(
+    original_idx = which(valid_idx),
+    filtered_idx = 1:sum(valid_idx)
+  )
+  
+  return(list(gr = gr, valid_idx = valid_idx, idx_map = idx_map))
+}
+
+# Modified process_reference_data function
+process_reference_data <- function(ref_data) {
+  # Extract row names as chromosome locations
+  ref_data$chr_location <- rownames(ref_data)
+  
+  # Check for NA values in chromosome locations
+  if(any(is.na(ref_data$chr_location))) {
+    cat("Warning: Found", sum(is.na(ref_data$chr_location)), "NA values in chromosome locations\n")
+  }
+  
+  # Convert to GRanges with NA handling
+  gr_result <- chr_to_granges(ref_data$chr_location)
+  ref_granges <- gr_result$gr
+  valid_idx <- gr_result$valid_idx
+  
+  # Add expression data to GRanges (only from valid rows)
+  mcols(ref_granges) <- ref_data[valid_idx, setdiff(colnames(ref_data), "chr_location")]
+  
+  return(list(granges = ref_granges, valid_idx = valid_idx))
+}
+
+# Make sure mixture data columns are properly converted to numeric
+process_mixture_data <- function(mix_data) {
+  # Check for required columns
+  req_cols <- c("contig", "start", "end")
+  missing_cols <- req_cols[!req_cols %in% colnames(mix_data)]
+  
+  if(length(missing_cols) > 0) {
+    stop("Missing required columns in mixture data: ", paste(missing_cols, collapse=", "))
+  }
+  
+  # Convert start and end to numeric if they're not already
+  mix_data$start <- as.numeric(as.character(mix_data$start))
+  mix_data$end <- as.numeric(as.character(mix_data$end))
+  
+  # Check for NA values
+  has_na <- any(is.na(mix_data$contig)) || any(is.na(mix_data$start)) || any(is.na(mix_data$end))
+  if(has_na) {
+    cat("Warning: Found NA values in genomic coordinates\n")
+  }
+  
+  # Find valid rows (no NAs in coordinates)
+  valid_idx <- !is.na(mix_data$contig) & !is.na(mix_data$start) & !is.na(mix_data$end)
+  
+  if(sum(valid_idx) == 0) {
+    stop("No valid genomic coordinates found in mixture data")
+  }
+  
+  if(sum(!valid_idx) > 0) {
+    cat("Filtered out", sum(!valid_idx), "rows with missing coordinate data\n")
+  }
+  
+  # Create GRanges only from valid rows
+  mix_granges <- GRanges(
+    seqnames = mix_data$contig[valid_idx],
+    ranges = IRanges(
+      start = mix_data$start[valid_idx], 
+      end = mix_data$end[valid_idx]
+    )
+  )
+  
+  # Extract mixture data columns (Mix1 through Mix6)
+  mix_columns <- grep("^Mix[0-9]+_sorted\\.bam$", colnames(mix_data), value = TRUE)
+  if(length(mix_columns) == 0) {
+    # Try alternative pattern if the first one doesn't match
+    mix_columns <- grep("^Mix[0-9]+", colnames(mix_data), value = TRUE)
+  }
+  
+  if(length(mix_columns) == 0) {
+    stop("No mixture columns found in data")
+  }
+  
+  # Add mixture data to GRanges
+  mcols(mix_granges) <- mix_data[valid_idx, mix_columns, drop=FALSE]
+  
+  return(list(granges = mix_granges, valid_idx = valid_idx))
+}
+
+# Function to find overlapping regions between reference and mixture data
+find_overlapping_regions <- function(ref_granges, mix_granges, overlap_type = "any", min_overlap_ratio = 0.5) {
+  # Find overlaps
+  overlaps <- findOverlaps(ref_granges, mix_granges, type = overlap_type)
+  
+  if(length(overlaps) == 0) {
+    stop("No overlapping regions found between reference and mixture data")
+  }
+  
+  # Calculate overlap ratios if needed
+  if (min_overlap_ratio > 0) {
+    overlap_widths <- width(pintersect(ref_granges[queryHits(overlaps)], 
+                                       mix_granges[subjectHits(overlaps)]))
+    ref_widths <- width(ref_granges[queryHits(overlaps)])
+    mix_widths <- width(mix_granges[subjectHits(overlaps)])
+    
+    # Keep only overlaps that meet minimum ratio criteria
+    valid_idx <- overlap_widths / pmin(ref_widths, mix_widths) >= min_overlap_ratio
+    valid_overlaps <- overlaps[valid_idx]
+    
+    if(length(valid_overlaps) == 0) {
+      stop("No overlaps meet the minimum overlap ratio criteria")
+    }
+    
+    cat("Found", length(valid_overlaps), "regions with sufficient overlap\n")
+    return(valid_overlaps)
+  }
+  
+  cat("Found", length(overlaps), "overlapping regions\n")
+  return(overlaps)
+}
+
+# Main function to align and prepare data for deconvolution
+prepare_deconvolution_data <- function(ref_data, mix_data, output_file = "deconv_ready_data.rds") {
+  cat("Processing reference data...\n")
+  ref_result <- process_reference_data(ref_data)
+  ref_granges <- ref_result$granges
+  
+  cat("Processing mixture data...\n")
+  mix_result <- process_mixture_data(mix_data)
+  mix_granges <- mix_result$granges
+  
+  cat("Finding overlapping regions...\n")
+  overlaps <- find_overlapping_regions(ref_granges, mix_granges)
+  
+  # Create aligned data frames
+  ref_matched <- ref_granges[queryHits(overlaps)]
+  mix_matched <- mix_granges[subjectHits(overlaps)]
+  
+  # Create region identifiers
+  region_ids <- paste0(seqnames(ref_matched), ":", start(ref_matched), "-", end(ref_matched))
+  
+  # Extract expression data
+  ref_expr <- as.data.frame(mcols(ref_matched))
+  mix_expr <- as.data.frame(mcols(mix_matched))
+  
+  # Print data summary
+  cat("\nData preparation complete:\n")
+  cat("- Reference data:", nrow(ref_expr), "regions,", ncol(ref_expr), "cell types\n")
+  cat("- Mixture data:", nrow(mix_expr), "regions,", ncol(mix_expr), "samples\n")
+  
+  # Check for missing values in expression data
+  ref_na <- sum(is.na(ref_expr))
+  mix_na <- sum(is.na(mix_expr))
+  
+  if(ref_na > 0 || mix_na > 0) {
+    cat("Warning: Found missing values in expression data\n")
+    cat("- Reference data:", ref_na, "missing values\n")
+    cat("- Mixture data:", mix_na, "missing values\n")
+    
+    # Replace NA values with zeros
+    ref_expr[is.na(ref_expr)] <- 0
+    mix_expr[is.na(mix_expr)] <- 0
+    cat("- Missing values replaced with zeros\n")
+  }
+  
+  # Combine into a list
+  deconv_data <- list(
+    region_ids = region_ids,
+    reference_matrix = ref_expr,
+    mixture_matrix = mix_expr
+  )
+  
+  # Save prepared data
+  if(!is.null(output_file)) {
+    saveRDS(deconv_data, file = output_file)
+    cat("Prepared data saved to", output_file, "\n")
+  }
+  
+  return(deconv_data)
+}
+
+# Function to inspect and clean data frames before processing
+inspect_and_clean_data <- function(df, df_name) {
+  cat("\nInspecting", df_name, ":\n")
+  cat("- Dimensions:", nrow(df), "rows,", ncol(df), "columns\n")
+  cat("- Column names:", paste(head(colnames(df), 5), collapse=", "), "...\n")
+  
+  # Check for NA values in the first column (likely the identifiers)
+  if(any(is.na(df[[1]]))) {
+    cat("- Warning: Found", sum(is.na(df[[1]])), "NA values in the first column\n")
+  }
+  
+  # Check data types
+  numeric_cols <- sapply(df, is.numeric)
+  cat("- Numeric columns:", sum(numeric_cols), "out of", ncol(df), "\n")
+  
+  # Check for character or factor columns that should be numeric
+  suspect_cols <- sapply(df, function(col) {
+    is.character(col) && all(grepl("^[0-9.e+-]+$", na.omit(col)))
+  })
+  
+  if(any(suspect_cols)) {
+    cat("- Found", sum(suspect_cols), "columns that may need conversion to numeric\n")
+    
+    # Convert suspect columns to numeric
+    for(col in names(df)[suspect_cols]) {
+      df[[col]] <- as.numeric(df[[col]])
+    }
+    cat("- Converted suspicious columns to numeric\n")
+  }
+  
+  # Check for and handle infinite values
+  has_inf <- sapply(df, function(col) if(is.numeric(col)) any(is.infinite(col)) else FALSE)
+  if(any(has_inf)) {
+    cat("- Warning: Found infinite values in", sum(has_inf), "columns\n")
+    
+    # Replace Inf values with NA
+    for(col in names(df)[has_inf]) {
+      df[[col]][is.infinite(df[[col]])] <- NA
+    }
+    cat("- Replaced infinite values with NA\n")
+  }
+  
+  return(df)
+}
+
+# Extended main function with additional data inspection
+prepare_deconvolution_data_safe <- function(ref_data, mix_data, output_file = "deconv_ready_data.rds") {
+  # Inspect and clean data first
+  ref_data <- inspect_and_clean_data(ref_data, "reference data")
+  mix_data <- inspect_and_clean_data(mix_data, "mixture data")
+  
+  # Try to prepare data with error handling
+  tryCatch({
+    result <- prepare_deconvolution_data(ref_data, mix_data, output_file)
+    return(result)
+  }, error = function(e) {
+    cat("\nError during data preparation:", e$message, "\n")
+    cat("Attempting to identify the specific issue...\n")
+    
+    # More detailed diagnostics
+    if(grepl("start.*end.*NA", e$message)) {
+      cat("Problem identified: NA values in genomic coordinates.\n")
+      cat("Checking reference data coordinates...\n")
+      
+      # Check first column assuming it contains chr:start-end format
+      if("chr_location" %in% colnames(ref_data) || grepl("^chr[0-9]+:", ref_data[[1]][1])) {
+        chr_col <- if("chr_location" %in% colnames(ref_data)) "chr_location" else names(ref_data)[1]
+        cat("- Found", sum(is.na(ref_data[[chr_col]])), "NA values in", chr_col, "\n")
+        
+        # Try to extract coordinates and check
+        if(!all(is.na(ref_data[[chr_col]]))) {
+          sample_loc <- na.omit(ref_data[[chr_col]])[1]
+          cat("- Sample location format:", sample_loc, "\n")
+          
+          # Try parsing a sample
+          chrom <- str_extract(sample_loc, "^chr[^:]+")
+          ranges <- str_extract(sample_loc, "(?<=:)[0-9]+-[0-9]+$")
+          starts <- as.numeric(str_extract(ranges, "^[0-9]+"))
+          ends <- as.numeric(str_extract(ranges, "[0-9]+$"))
+          
+          cat("- Parsed sample - chrom:", chrom, "start:", starts, "end:", ends, "\n")
+        }
+      }
+      
+      cat("Checking mixture data coordinates...\n")
+      if(all(c("contig", "start", "end") %in% colnames(mix_data))) {
+        cat("- Found", sum(is.na(mix_data$contig)), "NA values in contig column\n")
+        cat("- Found", sum(is.na(mix_data$start)), "NA values in start column\n")
+        cat("- Found", sum(is.na(mix_data$end)), "NA values in end column\n")
+        
+        # Check data types
+        cat("- Data types - start:", class(mix_data$start), "end:", class(mix_data$end), "\n")
+        
+        # Try conversion if needed
+        if(!is.numeric(mix_data$start)) {
+          cat("- Attempting to convert start to numeric\n")
+          mix_data$start <- as.numeric(as.character(mix_data$start))
+        }
+        if(!is.numeric(mix_data$end)) {
+          cat("- Attempting to convert end to numeric\n")
+          mix_data$end <- as.numeric(as.character(mix_data$end))
+        }
+        
+        # Try again with cleaned data
+        cat("Retrying with cleaned data...\n")
+        return(prepare_deconvolution_data(ref_data, mix_data, output_file))
+      }
+    }
+    
+    # If we get here, we couldn't fix the issue automatically
+    stop("Could not automatically fix the data issue. Please check your data structure.", call. = FALSE)
+  })
+}
+
+
+ deconv_data <- prepare_deconvolution_data_safe(df, df_1)
+
+ 
+ deconv_ready <- readRDS("deconv_ready_data.rds")
+
+ str(deconv_ready)
+ head(deconv_ready$region_ids)
+ dim(deconv_ready$reference_matrix)
+ dim(deconv_ready$mixture_matrix)
