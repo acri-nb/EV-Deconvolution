@@ -1,6 +1,6 @@
 # EV-Deconvolution
 
-This repository contains the code used for the analyses, simulations, and figures presented in **[Paper Title]**.
+This repository contains the code used for the analyses and figures presented in **ADD OUR PAPER LINK HERE**.
 
 The project focuses on evaluating and applying multiple **cell-type deconvolution methods**, including simulations with variable sequencing depth and a clinical application to colorectal cancer (CRC) data.
 
