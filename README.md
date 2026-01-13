@@ -2,7 +2,8 @@
 
 This repository contains the code used for the analyses and figures presented in **ADD OUR PAPER LINK HERE**.
 
-The project focuses on evaluating and applying multiple **cell-type deconvolution methods** on EV-RNA data with the overarching goal of determining the most robust algorithm. Additionally, the top performing method was used in conjonction with our created signature matrix to attempt to deconvolve a clinical EV RNA dataset pertaiting to colorectal cancer.
+The project focuses on evaluating and applying multiple **cell-type deconvolution methods** on EV-RNA data with the overarching goal of determining the most robust algorithm. Additionally, the top performing method was used in conjonction with our created signature matrix to attempt to deconvolve a clinical EV RNA dataset pertaining to colorectal cancer.
+
 ---
 
 ## Repository Structure
