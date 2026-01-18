@@ -14,11 +14,12 @@ The repository is organized as follows:
 
 These directories contain scripts used to generate the figures presented in the paper.
 
-- `Figure_2/` – Used to generate Figure 2  
+- `Figure_2-3/` – Used to generate Figures 2 and 3
 - `Figure 5/` – Used to generate Figure 5  
 - `Figures_1_6_7/` – Used to generate Figures 1, 6, and 7  
 - `Figure_4.R` – Used to generate Figure 4  
-- `FIGURE_S2.R` - Used to generate Supplementary Figure S2  
+- `FIGURE_S2.R` - Used to generate Supplementary Figure S2
+-  `FIGURE_S1.R` - Used to generate Supplementary Figure S1
 
 ---
 
