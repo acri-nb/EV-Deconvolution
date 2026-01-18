@@ -333,3 +333,15 @@ prepare_deconvolution_data_safe <- function(ref_data, mix_data, output_file = "d
  head(deconv_ready$region_ids)
  dim(deconv_ready$reference_matrix)
  dim(deconv_ready$mixture_matrix)
+
+
+#The following command was then input into a Docker terminal
+#~ % docker run \
+# -v _____________________/src/data \
+#-v _____________________/src/outdir \
+#cibersortx/fractions \
+#--username __________________ \
+#--token _____________________ \
+#--mixture _____________________.txt \
+#--sigmatrix ___________________.txt
+
