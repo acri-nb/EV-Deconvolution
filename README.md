@@ -14,12 +14,8 @@ The repository is organized as follows:
 
 These directories contain scripts used to generate the figures presented in the paper.
 
-- `Figure_2-3/` – Used to generate Figures 2 and 3
-- `Figure 5/` – Used to generate Figure 5  
-- `Figures_1_6_7/` – Used to generate Figures 1, 6, and 7  
-- `Figure_4.R` – Used to generate Figure 4  
-- `FIGURE_S2.R` - Used to generate Supplementary Figure S2
--  `FIGURE_S1.R` - Used to generate Supplementary Figure S1
+- `Figures/` – Used to generate Figures 1 through 7
+- `Supplemental figures/` – Used to generate supplementary figures 1 and 2 
 
 ---
 
@@ -50,7 +46,6 @@ The following directories contain the scripts used to run and evaluate different
 - `HSPE/`
 
 Each directory contains method-specific scripts and settings used in the analyses.
-
 
 ---
 
