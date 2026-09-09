@@ -53,11 +53,11 @@ Each directory contains method-specific scripts and settings used in the analyse
 ## Citation
 
 If you use this code, please cite:
-***What do I put here lol***
+
 
 ---
 
 ## Contact
 
 For questions, please contact:  
-***What do I put here lol***
+Dr Eric Allain - eric.allain@vitalitenb.ca
